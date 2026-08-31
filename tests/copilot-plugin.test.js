@@ -14,6 +14,7 @@ const REQUIRED_COMMAND_FILES = [
   'ponytail-audit.toml',
   'ponytail-debt.toml',
   'ponytail-gain.toml',
+  'ponytail-prompt.toml',
   'ponytail-help.toml',
 ];
 

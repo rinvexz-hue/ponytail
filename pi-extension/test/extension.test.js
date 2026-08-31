@@ -61,7 +61,7 @@ function withTempConfig(fn) {
 test("extension registers Ponytail commands", () => {
   const { commands } = createPiHarness();
 
-  assert.deepEqual([...commands.keys()].sort(), ["ponytail", "ponytail-audit", "ponytail-debt", "ponytail-gain", "ponytail-help", "ponytail-review"]);
+  assert.deepEqual([...commands.keys()].sort(), ["ponytail", "ponytail-audit", "ponytail-debt", "ponytail-gain", "ponytail-help", "ponytail-prompt", "ponytail-review"]);
 });
 
 test("/ponytail updates session mode and injects instructions", async () => withTempConfig(async () => {
@@ -129,6 +129,7 @@ test("skill alias commands delegate to Pi skill commands", async () => {
   await commands.get("ponytail-debt").handler("", ctx);
   await commands.get("ponytail-gain").handler("", ctx);
   await commands.get("ponytail-help").handler("", ctx);
+  await commands.get("ponytail-prompt").handler("", ctx);
 
   assert.deepEqual(sentUserMessages.map((entry) => entry.text), [
     "/skill:ponytail-review",
@@ -136,6 +137,7 @@ test("skill alias commands delegate to Pi skill commands", async () => {
     "/skill:ponytail-debt",
     "/skill:ponytail-gain",
     "/skill:ponytail-help",
+    "/skill:ponytail-prompt",
   ]);
 });
 

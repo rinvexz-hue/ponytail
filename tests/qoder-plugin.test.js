@@ -14,6 +14,7 @@ const SKILL_DIRS = [
   'ponytail-audit',
   'ponytail-debt',
   'ponytail-gain',
+  'ponytail-prompt',
   'ponytail-help',
 ];
 

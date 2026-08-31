@@ -16,6 +16,7 @@ SKILL_COMMANDS = {
     "ponytail-audit": "Audit the repo for over-engineering and deletion opportunities.",
     "ponytail-debt": "List every deliberate `ponytail:` shortcut and its upgrade path.",
     "ponytail-gain": "Show the measured-impact scoreboard (less code, less cost, more speed).",
+    "ponytail-prompt": "Rewrite a request into the prompt that gets the best possible answer.",
     "ponytail-help": "Show the Ponytail command reference.",
 }
 
