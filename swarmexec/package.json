@@ -1,0 +1,30 @@
+{
+  "name": "swarmexec",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Real autonomous meme coin trading execution engine for Solana. PAPER mode by default.",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/main.ts",
+    "start:paper": "SWARMEXEC_MODE=PAPER tsx src/main.ts",
+    "start:testnet": "SWARMEXEC_MODE=TESTNET tsx src/main.ts",
+    "start:live-capped": "SWARMEXEC_MODE=LIVE_CAPPED tsx src/main.ts",
+    "signer": "tsx src/signer/server.ts",
+    "killswitch": "tsx src/util/killswitchCli.ts",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@solana/web3.js": "^1.95.3"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "tsx": "^4.16.2",
+    "typescript": "^5.5.4",
+    "vitest": "^2.0.5"
+  }
+}
