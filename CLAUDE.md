@@ -26,7 +26,7 @@ node scripts/check-rule-copies.js # verify AGENTS.md / rule copies / SKILL.md in
 node scripts/check-versions.js    # verify all version-bearing manifests share one semver
 ```
 
-Root tests mix two styles: plain top-level `assert` scripts that throw on failure (e.g. `tests/hooks.test.js`), and `node:test`-based files using `test()` blocks (e.g. `tests/behavior.test.js`). Both run fine under `node --test`. `pi-extension/` and `ponytail-mcp/` are separate npm packages with their own `package.json`/tests, run via `npm test --prefix <dir>`; `ponytail-mcp` needs `npm install --prefix ponytail-mcp` first (CI does this).
+Root tests mix two styles: plain top-level `assert` scripts that throw on failure (e.g. `tests/hooks.test.js`), and `node:test`-based files using `test()` blocks (e.g. `tests/behavior.test.js`). Both run fine under `node --test`. `pi-extension/` and `ponytail-mcp/` are separate npm packages with their own `package.json`/tests, run via `npm test --prefix <dir>`; `ponytail-mcp` needs `npm install --prefix ponytail-mcp` first (CI does this). `tests/correctness.test.js` shells out to `python3`/`node` to actually execute generated code snippets (see `benchmarks/correctness.js`); its CSV-sum check imports `pandas`, so `pip install pandas` is needed before `npm test` will pass locally (CI does this too, see `.github/workflows/test.yml`).
 
 No build/lint/typecheck step — this is plain, unbundled Node.js (CommonJS in `hooks/` and `tests/`, no transpilation).
 
