@@ -2,6 +2,7 @@ import './store'
 import { TickerBar } from './components/TickerBar'
 import { Header } from './components/Header'
 import { KpiRow } from './components/KpiRow'
+import { PositionsPanel } from './components/PositionsPanel'
 import { TradingPanel } from './components/TradingPanel'
 import { SwarmCore } from './components/SwarmCore'
 import { AlignmentBar } from './components/AlignmentBar'
@@ -13,6 +14,7 @@ export default function App() {
       <Header />
       <main>
         <KpiRow />
+        <PositionsPanel />
         <TradingPanel />
         <SwarmCore />
         <AlignmentBar />

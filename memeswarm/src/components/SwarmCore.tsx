@@ -105,11 +105,10 @@ export function SwarmCore() {
                         key={`pulse-${id}`}
                         r={1.6}
                         fill={meta.color}
-                        initial={{ offsetDistance: '0%', opacity: 1 }}
-                        animate={{ offsetDistance: '100%', opacity: 0 }}
+                        initial={{ cx: 50, cy: 50, opacity: 1 }}
+                        animate={{ cx: pos.x, cy: pos.y, opacity: 0 }}
                         exit={{ opacity: 0 }}
                         transition={{ duration: 0.85, ease: 'easeOut' }}
-                        style={{ offsetPath: `path('${pathD}')` }}
                       />
                     )}
                   </AnimatePresence>
@@ -189,11 +188,8 @@ function Mascot() {
                 strokeWidth="3.5"
                 strokeLinecap="round"
                 fill="none"
-                animate={{ d: [
-                  `M${x1} ${y1} Q${(x1 + x2) / 2 + 6} ${(y1 + y2) / 2} ${x2} ${y2}`,
-                  `M${x1} ${y1} Q${(x1 + x2) / 2 - 6} ${(y1 + y2) / 2} ${x2} ${y2}`,
-                  `M${x1} ${y1} Q${(x1 + x2) / 2 + 6} ${(y1 + y2) / 2} ${x2} ${y2}`,
-                ] }}
+                style={{ transformOrigin: `${x1}px ${y1}px` }}
+                animate={{ rotate: [-5, 5, -5] }}
                 transition={{ duration: 3 + i * 0.2, repeat: Infinity, ease: 'easeInOut' }}
               />
             )

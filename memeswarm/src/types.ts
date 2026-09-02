@@ -59,6 +59,19 @@ export interface LogEntry {
   reason: string
 }
 
+export interface Position {
+  id: string
+  token: string
+  entryPrice: number
+  currentPrice: number
+  units: number
+  notional: number
+  unrealizedPnl: number
+  unrealizedPnlPct: number
+  openedAtCycle: number
+  openedAt: number
+}
+
 export interface KpiState {
   netEquity: number
   netEquitySeries: number[]
@@ -85,6 +98,7 @@ export interface SimState {
   candles: Candle[]
   movingAverage: number[]
   kpis: KpiState
+  positions: Position[]
   log: LogEntry[]
   resolvedCount: number
   armLoad: number

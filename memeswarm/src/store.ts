@@ -32,6 +32,7 @@ const initialState: SimState = {
     hitRateSeries: [],
     sharpe: 0,
   },
+  positions: [],
   log: [],
   resolvedCount: 0,
   armLoad: 0,

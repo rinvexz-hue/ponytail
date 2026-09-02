@@ -14,6 +14,7 @@ import type {
   EventListener,
   KpiState,
   LogEntry,
+  Position,
   SimEvent,
   SimState,
   TickListener,
@@ -28,6 +29,7 @@ const CANDLE_COUNT = 24
 const TICKS_PER_CANDLE = 20
 const SPARKLINE_LEN = 30
 const EQUITY_SERIES_LEN = 60
+const MAX_POSITIONS = 6
 const LOG_MAX = 60
 const SEED_EQUITY = 50000
 
@@ -186,6 +188,16 @@ interface EngineAgent {
   sparkline: number[]
 }
 
+interface EnginePosition {
+  id: string
+  token: string
+  entryPrice: number
+  units: number
+  notional: number
+  openedAtCycle: number
+  openedAt: number
+}
+
 class SwarmEngine {
   private cycle = 0
   private sessionStart = Date.now()
@@ -226,6 +238,8 @@ class SwarmEngine {
   private candles: Candle[] = []
   private ticksIntoCandle = 0
   private movingAverage: number[] = []
+
+  private openPositions: EnginePosition[] = []
 
   private log: LogEntry[] = []
   private armLoad = 40
@@ -358,20 +372,50 @@ class SwarmEngine {
     return appended
   }
 
+  private priceFor(symbol: string): number {
+    const t = this.tickers.find((x) => x.symbol === symbol)
+    if (!t) return 1
+    return t.basePrice * (1 + t.pct / 100)
+  }
+
   private appendLogEntry(agentId: AgentId) {
     const action = choice(ACTIONS_BY_AGENT[agentId])
     const reason = choice(REASONS_BY_AGENT[agentId])
-    const token = choice(this.tickers).symbol
+    let token = choice(this.tickers).symbol
 
     let pnl: number | null = null
-    if (action === 'SELL') {
-      const winBias = 0.5 + this.marketFactor * 0.15 + 0.08
-      const isWin = Math.random() < clamp(winBias, 0.35, 0.78)
-      const magnitude = this.equity * randRange(0.001, 0.018)
-      pnl = isWin ? magnitude : -magnitude * randRange(0.4, 1)
-      if (isWin) this.wins += 1
-      else this.losses += 1
-      this.resolvedCount += 1
+    if (action === 'BUY') {
+      if (this.openPositions.length < MAX_POSITIONS) {
+        const entryPrice = this.priceFor(token)
+        const notional = this.equity * randRange(0.03, 0.09)
+        this.openPositions.push({
+          id: uid(),
+          token,
+          entryPrice,
+          units: notional / entryPrice,
+          notional,
+          openedAtCycle: this.cycle,
+          openedAt: Date.now(),
+        })
+      }
+    } else if (action === 'SELL') {
+      if (this.openPositions.length > 0) {
+        const idx = Math.floor(Math.random() * this.openPositions.length)
+        const [closed] = this.openPositions.splice(idx, 1)
+        token = closed.token
+        pnl = (this.priceFor(closed.token) - closed.entryPrice) * closed.units
+        if (pnl > 0) this.wins += 1
+        else this.losses += 1
+        this.resolvedCount += 1
+      } else {
+        const winBias = 0.5 + this.marketFactor * 0.15 + 0.08
+        const isWin = Math.random() < clamp(winBias, 0.35, 0.78)
+        const magnitude = this.equity * randRange(0.001, 0.018)
+        pnl = isWin ? magnitude : -magnitude * randRange(0.4, 1)
+        if (isWin) this.wins += 1
+        else this.losses += 1
+        this.resolvedCount += 1
+      }
     } else if (action === 'FILL' && Math.random() < 0.5) {
       pnl = randRange(-40, 60)
     } else if (action === 'HEDGE' && reason.includes('flagged')) {
@@ -481,6 +525,25 @@ class SwarmEngine {
     }
   }
 
+  private buildPositions(): Position[] {
+    return this.openPositions.map((p) => {
+      const currentPrice = this.priceFor(p.token)
+      const unrealizedPnl = (currentPrice - p.entryPrice) * p.units
+      return {
+        id: p.id,
+        token: p.token,
+        entryPrice: p.entryPrice,
+        currentPrice,
+        units: p.units,
+        notional: p.notional,
+        unrealizedPnl,
+        unrealizedPnlPct: (unrealizedPnl / p.notional) * 100,
+        openedAtCycle: p.openedAtCycle,
+        openedAt: p.openedAt,
+      }
+    })
+  }
+
   private snapshot(_initial = false): SimState {
     const tickers: TickerState[] = this.tickers.map((t) => ({
       symbol: t.symbol,
@@ -514,6 +577,7 @@ class SwarmEngine {
       candles: this.candles,
       movingAverage: this.movingAverage,
       kpis: this.buildKpis(),
+      positions: this.buildPositions(),
       log: this.log,
       resolvedCount: this.resolvedCount,
       armLoad: this.armLoad,
