@@ -16,6 +16,7 @@ const ACTION_STYLES: Record<ActionType, string> = {
 export function ActivityLog() {
   const log = useSwarmStore((s) => s.log)
   const resolvedCount = useSwarmStore((s) => s.resolvedCount)
+  const alphaRadarConnected = useSwarmStore((s) => s.alphaRadarConnected)
 
   return (
     <div className="flex h-full flex-col">
@@ -68,8 +69,14 @@ export function ActivityLog() {
           <div className="py-8 text-center font-mono text-xs text-slate-600">awaiting first fill…</div>
         )}
       </div>
-      <div className="mt-2 border-t border-void-border pt-2 font-mono text-[10px] tracking-wide text-slate-600">
-        {resolvedCount.toLocaleString()} resolved
+      <div className="mt-2 flex items-center justify-between border-t border-void-border pt-2 font-mono text-[10px] tracking-wide text-slate-600">
+        <span>{resolvedCount.toLocaleString()} resolved</span>
+        {alphaRadarConnected && (
+          <span className="flex items-center gap-1 text-profit">
+            <span className="h-1.5 w-1.5 rounded-full bg-profit" style={{ boxShadow: '0 0 4px 1px currentColor' }} />
+            LIVE · AlphaRadar
+          </span>
+        )}
       </div>
     </div>
   )
