@@ -1,0 +1,531 @@
+// MEMESWARM simulation engine — the ONLY file that knows this data is fake.
+//
+// It owns a private mutable state, advances it on a jittered tick loop, and
+// hands the UI layer immutable snapshots via `start(onTick, onEvent)`.
+// A real backend (Dexscreener/Birdeye/Pump.fun reads) can replace the body
+// of `tick()` without any UI component ever knowing, as long as it keeps
+// producing `SimState` snapshots shaped the same way.
+
+import type {
+  ActionType,
+  AgentId,
+  AgentState,
+  Candle,
+  EventListener,
+  KpiState,
+  LogEntry,
+  SimEvent,
+  SimState,
+  TickListener,
+  TickerState,
+} from './types'
+import { AGENT_IDS, TICKER_SYMBOLS } from './lib/agents'
+
+// ---------- tunables ----------
+const MIN_TICK_MS = 250
+const MAX_TICK_MS = 800
+const CANDLE_COUNT = 24
+const TICKS_PER_CANDLE = 20
+const SPARKLINE_LEN = 30
+const EQUITY_SERIES_LEN = 60
+const LOG_MAX = 60
+const SEED_EQUITY = 50000
+
+const ACTIONS_BY_AGENT: Record<AgentId, ActionType[]> = {
+  scout: ['ROUTE', 'QUOTE'],
+  sniper: ['BUY'],
+  sentiment: ['QUOTE'],
+  whalewatch: ['ROUTE', 'QUOTE'],
+  liquidity: ['ROUTE'],
+  risk: ['HEDGE'],
+  exit: ['SELL'],
+  treasury: ['FILL'],
+}
+
+const REASONS_BY_AGENT: Record<AgentId, string[]> = {
+  scout: [
+    'new pair detected on-chain',
+    'liquidity pool just seeded',
+    'fresh launch flagged for scan',
+    'contract deployed under 2min ago',
+  ],
+  sniper: [
+    'momentum confirmed',
+    'entry signal triggered',
+    'breakout above resistance',
+    'volume spike on entry candle',
+  ],
+  sentiment: [
+    'hype spike detected',
+    'trending across socials',
+    'influencer mention surge',
+    'community sentiment turning bullish',
+  ],
+  whalewatch: [
+    'large wallet accumulating',
+    'whale wallet exited position',
+    'smart money inflow detected',
+    'top holder concentration rising',
+  ],
+  liquidity: [
+    'pool depth healthy',
+    'slippage tolerance adjusted',
+    'thin liquidity — reducing size',
+    'LP unlock detected',
+  ],
+  risk: [
+    'rug risk flagged — exited',
+    'contract ownership renounced',
+    'honeypot check passed',
+    'mint authority still active',
+    'liquidity lock verified',
+  ],
+  exit: [
+    'take-profit target hit',
+    'stop-loss triggered',
+    'trailing stop executed',
+    'momentum fading — closing',
+  ],
+  treasury: [
+    'settlement batch processed',
+    'wallet rebalanced across venues',
+    'gas reserve topped up',
+    'profit swept to treasury',
+  ],
+}
+
+const AGENT_BETA: Record<AgentId, number> = {
+  scout: 0.3,
+  sniper: 0.9,
+  sentiment: 0.6,
+  whalewatch: 0.5,
+  liquidity: 0.2,
+  risk: -0.4,
+  exit: 0.7,
+  treasury: 0.15,
+}
+
+const STATUS_WEIGHTS: Record<AgentId, Partial<Record<AgentState['status'], number>>> = {
+  scout: { SCANNING: 5, EXECUTING: 2, STANDBY: 2, IDLE: 1 },
+  sniper: { EXECUTING: 3, SCANNING: 3, STANDBY: 3, IDLE: 1 },
+  sentiment: { SCANNING: 5, EXECUTING: 2, STANDBY: 2 },
+  whalewatch: { SCANNING: 4, GUARDING: 2, STANDBY: 2, EXECUTING: 1 },
+  liquidity: { SCANNING: 4, STANDBY: 3, EXECUTING: 1, GUARDING: 1 },
+  risk: { GUARDING: 5, SCANNING: 3, EXECUTING: 1, STANDBY: 1 },
+  exit: { STANDBY: 4, EXECUTING: 3, SCANNING: 2, IDLE: 1 },
+  treasury: { STANDBY: 4, IDLE: 3, EXECUTING: 2 },
+}
+
+// ---------- math helpers ----------
+function clamp(v: number, lo: number, hi: number) {
+  return Math.min(hi, Math.max(lo, v))
+}
+
+function randRange(min: number, max: number) {
+  return min + Math.random() * (max - min)
+}
+
+function randNormal() {
+  // Box-Muller
+  let u = 0
+  let v = 0
+  while (u === 0) u = Math.random()
+  while (v === 0) v = Math.random()
+  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v)
+}
+
+function choice<T>(arr: T[]): T {
+  return arr[Math.floor(Math.random() * arr.length)]
+}
+
+function weightedStatus(weights: Partial<Record<AgentState['status'], number>>): AgentState['status'] {
+  const entries = Object.entries(weights) as [AgentState['status'], number][]
+  const total = entries.reduce((s, [, w]) => s + w, 0)
+  let r = Math.random() * total
+  for (const [status, w] of entries) {
+    r -= w
+    if (r <= 0) return status
+  }
+  return entries[0][0]
+}
+
+function pushCapped(arr: number[], value: number, cap: number): number[] {
+  const next = arr.length >= cap ? arr.slice(arr.length - cap + 1) : arr.slice()
+  next.push(value)
+  return next
+}
+
+function mean(arr: number[]) {
+  if (!arr.length) return 0
+  return arr.reduce((a, b) => a + b, 0) / arr.length
+}
+
+function stdDev(arr: number[]) {
+  if (arr.length < 2) return 0
+  const m = mean(arr)
+  return Math.sqrt(mean(arr.map((v) => (v - m) ** 2)))
+}
+
+function uid() {
+  return Math.random().toString(36).slice(2, 10)
+}
+
+// ---------- internal mutable engine state ----------
+interface EngineTicker {
+  symbol: string
+  basePrice: number
+  pct: number
+  beta: number
+}
+
+interface EngineAgent {
+  id: AgentId
+  status: AgentState['status']
+  ticksInState: number
+  value: number
+  sparkline: number[]
+}
+
+class SwarmEngine {
+  private cycle = 0
+  private sessionStart = Date.now()
+  private marketFactor = 0
+
+  private tickers: EngineTicker[] = TICKER_SYMBOLS.map((symbol, i) => ({
+    symbol,
+    basePrice: randRange(0.000002, 1.4) * (i % 3 === 0 ? 100 : 1),
+    pct: randRange(-8, 8),
+    beta: randRange(0.4, 1.1),
+  }))
+
+  private agents: Record<AgentId, EngineAgent> = Object.fromEntries(
+    AGENT_IDS.map((id) => [
+      id,
+      {
+        id,
+        status: 'STANDBY' as const,
+        ticksInState: 0,
+        value: randRange(-4, 4),
+        sparkline: Array.from({ length: SPARKLINE_LEN }, () => randRange(-3, 3)),
+      },
+    ]),
+  ) as Record<AgentId, EngineAgent>
+
+  private equity = SEED_EQUITY
+  private equitySeries: number[] = Array.from({ length: EQUITY_SERIES_LEN }, () => SEED_EQUITY)
+  private pnlSeries: number[] = Array.from({ length: EQUITY_SERIES_LEN }, () => 0)
+  private hitRateSeries: number[] = Array.from({ length: EQUITY_SERIES_LEN }, () => 50)
+  private allTimeHighEquity = SEED_EQUITY
+  private volume24h = 0
+  private fills = 0
+  private venues = 5
+  private wins = 0
+  private losses = 0
+  private resolvedCount = 0
+
+  private candles: Candle[] = []
+  private ticksIntoCandle = 0
+  private movingAverage: number[] = []
+
+  private log: LogEntry[] = []
+  private armLoad = 40
+  private gripTorque = 55
+  private alignment = 62
+
+  private timeoutId: ReturnType<typeof setTimeout> | null = null
+  private tickListeners = new Set<TickListener>()
+  private eventListeners = new Set<EventListener>()
+
+  constructor() {
+    this.seedCandles()
+  }
+
+  private seedCandles() {
+    let price = this.equity
+    const now = Date.now()
+    const hourMs = 60 * 60 * 1000
+    for (let i = CANDLE_COUNT; i >= 1; i--) {
+      const open = price
+      const drift = randNormal() * price * 0.004
+      const close = clamp(open + drift, open * 0.9, open * 1.1)
+      const high = Math.max(open, close) + Math.abs(randNormal()) * price * 0.002
+      const low = Math.min(open, close) - Math.abs(randNormal()) * price * 0.002
+      this.candles.push({
+        time: now - i * hourMs,
+        open,
+        high,
+        low,
+        close,
+        volume: randRange(800, 6000),
+      })
+      price = close
+    }
+    this.equity = price
+    this.recomputeMovingAverage()
+  }
+
+  private recomputeMovingAverage() {
+    const period = 5
+    this.movingAverage = this.candles.map((_, idx) => {
+      const start = Math.max(0, idx - period + 1)
+      const slice = this.candles.slice(start, idx + 1)
+      return mean(slice.map((c) => c.close))
+    })
+  }
+
+  start(onTick: TickListener, onEvent?: EventListener) {
+    this.tickListeners.add(onTick)
+    if (onEvent) this.eventListeners.add(onEvent)
+    if (!this.timeoutId) this.scheduleNext()
+    onTick(this.snapshot(true))
+    return () => {
+      this.tickListeners.delete(onTick)
+      if (onEvent) this.eventListeners.delete(onEvent)
+    }
+  }
+
+  stop() {
+    if (this.timeoutId) clearTimeout(this.timeoutId)
+    this.timeoutId = null
+  }
+
+  private scheduleNext() {
+    const delay = randRange(MIN_TICK_MS, MAX_TICK_MS)
+    this.timeoutId = setTimeout(() => {
+      this.tick()
+      this.scheduleNext()
+    }, delay)
+  }
+
+  private emit(event: SimEvent) {
+    this.eventListeners.forEach((l) => l(event))
+  }
+
+  private tick() {
+    this.cycle += 1
+
+    // slow mean-reverting shared market factor drives coherent correlation
+    this.marketFactor = clamp(this.marketFactor + randNormal() * 0.05 - this.marketFactor * 0.04, -1, 1)
+
+    this.tickTickers()
+    const logAppended = this.tickAgentsAndLog()
+    this.tickEquity()
+    this.tickCandle()
+    this.tickMeters()
+
+    this.pushOut(logAppended)
+  }
+
+  private tickTickers() {
+    for (const t of this.tickers) {
+      const move = t.beta * this.marketFactor * 0.6 + randNormal() * 0.5
+      t.pct = clamp(t.pct + move, -95, 900)
+      // gentle mean reversion so tickers don't run away over a long session
+      t.pct -= t.pct * 0.01
+    }
+  }
+
+  private tickAgentsAndLog(): boolean {
+    let appended = false
+
+    for (const id of AGENT_IDS) {
+      const agent = this.agents[id]
+      agent.ticksInState += 1
+
+      const minDwell = 4
+      if (agent.ticksInState >= minDwell && Math.random() < 0.18) {
+        const weights = STATUS_WEIGHTS[id]
+        const next = weightedStatus(weights)
+        if (next !== agent.status) {
+          agent.status = next
+          agent.ticksInState = 0
+          if (next === 'EXECUTING') this.emit({ type: 'agentExecuting', agentId: id })
+        }
+      }
+
+      const beta = AGENT_BETA[id]
+      const drift = beta * this.marketFactor * 0.8 + randNormal() * 0.7
+      agent.value = clamp(agent.value + drift - agent.value * 0.05, -40, 40)
+      agent.sparkline = pushCapped(agent.sparkline, agent.value, SPARKLINE_LEN)
+
+      const activeChance = agent.status === 'EXECUTING' ? 0.55 : agent.status === 'SCANNING' ? 0.2 : agent.status === 'GUARDING' ? 0.15 : 0.05
+      if (Math.random() < activeChance) {
+        this.appendLogEntry(id)
+        appended = true
+      }
+    }
+
+    return appended
+  }
+
+  private appendLogEntry(agentId: AgentId) {
+    const action = choice(ACTIONS_BY_AGENT[agentId])
+    const reason = choice(REASONS_BY_AGENT[agentId])
+    const token = choice(this.tickers).symbol
+
+    let pnl: number | null = null
+    if (action === 'SELL') {
+      const winBias = 0.5 + this.marketFactor * 0.15 + 0.08
+      const isWin = Math.random() < clamp(winBias, 0.35, 0.78)
+      const magnitude = this.equity * randRange(0.001, 0.018)
+      pnl = isWin ? magnitude : -magnitude * randRange(0.4, 1)
+      if (isWin) this.wins += 1
+      else this.losses += 1
+      this.resolvedCount += 1
+    } else if (action === 'FILL' && Math.random() < 0.5) {
+      pnl = randRange(-40, 60)
+    } else if (action === 'HEDGE' && reason.includes('flagged')) {
+      pnl = -this.equity * randRange(0.0005, 0.004)
+      this.emit({ type: 'riskFlag', agentId })
+    }
+
+    if (pnl !== null) {
+      this.equity += pnl
+      if (pnl > 0) this.emit({ type: 'profit', agentId, pnl })
+      else if (pnl < 0) this.emit({ type: 'loss', agentId, pnl })
+    }
+
+    if (action === 'BUY' || action === 'SELL' || action === 'FILL') {
+      this.fills += 1
+      this.volume24h += this.equity * randRange(0.0008, 0.006)
+    }
+
+    if (Math.random() < 0.04) {
+      this.venues = Math.round(clamp(this.venues + (Math.random() < 0.5 ? -1 : 1), 3, 9))
+    }
+
+    const entry: LogEntry = {
+      id: uid(),
+      cycle: this.cycle,
+      timestamp: Date.now(),
+      agentId,
+      action,
+      token,
+      pnl,
+      reason,
+    }
+    this.log = [entry, ...this.log].slice(0, LOG_MAX)
+  }
+
+  private tickEquity() {
+    // small mark-to-market drift on open exposure, on top of realized pnl above
+    const mtm = this.equity * (this.marketFactor * 0.0006 + randNormal() * 0.0004)
+    this.equity = Math.max(1000, this.equity + mtm)
+
+    if (this.equity > this.allTimeHighEquity) {
+      this.allTimeHighEquity = this.equity
+      this.emit({ type: 'ath', equity: this.equity })
+    }
+
+    this.equitySeries = pushCapped(this.equitySeries, this.equity, EQUITY_SERIES_LEN)
+    this.pnlSeries = pushCapped(this.pnlSeries, this.equity - SEED_EQUITY, EQUITY_SERIES_LEN)
+
+    const totalTrades = this.wins + this.losses
+    const hitRatePct = totalTrades > 0 ? (this.wins / totalTrades) * 100 : 50
+    this.hitRateSeries = pushCapped(this.hitRateSeries, hitRatePct, EQUITY_SERIES_LEN)
+  }
+
+  private tickCandle() {
+    this.ticksIntoCandle += 1
+    const last = this.candles[this.candles.length - 1]
+    const close = this.equity
+    const high = Math.max(last.high, close)
+    const low = Math.min(last.low, close)
+    this.candles = [...this.candles.slice(0, -1), { ...last, close, high, low }]
+
+    if (this.ticksIntoCandle >= TICKS_PER_CANDLE) {
+      this.ticksIntoCandle = 0
+      const newCandle: Candle = {
+        time: Date.now(),
+        open: close,
+        high: close,
+        low: close,
+        close,
+        volume: randRange(800, 6000),
+      }
+      this.candles = [...this.candles.slice(1), newCandle]
+    }
+    this.recomputeMovingAverage()
+  }
+
+  private tickMeters() {
+    this.armLoad = clamp(this.armLoad + randNormal() * 3 + this.marketFactor * 2, 8, 96)
+    this.gripTorque = clamp(this.gripTorque + randNormal() * 3 - this.marketFactor * 1.5, 8, 96)
+
+    const totalTrades = this.wins + this.losses
+    const hitRatePct = totalTrades > 0 ? (this.wins / totalTrades) * 100 : 50
+    const riskDamp = this.agents.risk.status === 'GUARDING' ? -2 : 1
+    const target = clamp(hitRatePct * 0.6 + (this.marketFactor + 1) * 20 + riskDamp * 3, 5, 98)
+    this.alignment = clamp(this.alignment + (target - this.alignment) * 0.08 + randNormal() * 0.6, 0, 100)
+  }
+
+  private buildKpis(): KpiState {
+    const totalPnl = this.equity - SEED_EQUITY
+    const totalTrades = this.wins + this.losses
+    return {
+      netEquity: this.equity,
+      netEquitySeries: this.equitySeries,
+      seedEquity: SEED_EQUITY,
+      totalPnl,
+      totalPnlPct: (totalPnl / SEED_EQUITY) * 100,
+      pnlSeries: this.pnlSeries,
+      isAllTimeHigh: this.equity >= this.allTimeHighEquity,
+      volume24h: this.volume24h,
+      fills: this.fills,
+      venues: this.venues,
+      wins: this.wins,
+      losses: this.losses,
+      hitRatePct: totalTrades > 0 ? (this.wins / totalTrades) * 100 : 50,
+      hitRateSeries: this.hitRateSeries,
+      sharpe: clamp(mean(this.pnlSeries.slice(-20)) / (stdDev(this.pnlSeries.slice(-20)) || 1), -3, 3),
+    }
+  }
+
+  private snapshot(_initial = false): SimState {
+    const tickers: TickerState[] = this.tickers.map((t) => ({
+      symbol: t.symbol,
+      price: t.basePrice * (1 + t.pct / 100),
+      changePct: t.pct,
+      direction: t.pct >= 0 ? 1 : -1,
+    }))
+
+    const agents = Object.fromEntries(
+      AGENT_IDS.map((id) => {
+        const a = this.agents[id]
+        const wasJustExecuted = a.status === 'EXECUTING' && a.ticksInState === 0
+        return [
+          id,
+          {
+            id,
+            status: a.status,
+            value: a.value,
+            sparkline: a.sparkline,
+            justExecuted: wasJustExecuted,
+          } satisfies AgentState,
+        ]
+      }),
+    ) as Record<AgentId, AgentState>
+
+    return {
+      cycle: this.cycle,
+      sessionStart: this.sessionStart,
+      tickers,
+      agents,
+      candles: this.candles,
+      movingAverage: this.movingAverage,
+      kpis: this.buildKpis(),
+      log: this.log,
+      resolvedCount: this.resolvedCount,
+      armLoad: this.armLoad,
+      gripTorque: this.gripTorque,
+      alignment: this.alignment,
+    }
+  }
+
+  private pushOut(_logAppended: boolean) {
+    const state = this.snapshot()
+    this.tickListeners.forEach((l) => l(state))
+  }
+}
+
+export const swarmEngine = new SwarmEngine()

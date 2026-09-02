@@ -1,0 +1,94 @@
+import { useEffect, useState } from 'react'
+import { motion } from 'framer-motion'
+import { Volume2, VolumeX } from 'lucide-react'
+import { useSwarmStore } from '../store'
+import { useSoundStore } from '../sounds'
+import { formatUptime } from '../lib/format'
+import { AGENT_IDS } from '../lib/agents'
+
+export function Header() {
+  const cycle = useSwarmStore((s) => s.cycle)
+  const sessionStart = useSwarmStore((s) => s.sessionStart)
+  const soundEnabled = useSoundStore((s) => s.enabled)
+  const toggleSound = useSoundStore((s) => s.toggle)
+
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [])
+
+  return (
+    <header className="flex flex-col gap-4 border-b border-void-border px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6">
+      <div className="flex items-center gap-3">
+        <MascotMark />
+        <div>
+          <div className="flex items-center gap-2">
+            <h1 className="font-mono text-lg font-extrabold tracking-widest text-slate-100 sm:text-xl">
+              MEMESWARM
+            </h1>
+            <span className="rounded border border-amber/40 bg-amber/10 px-1.5 py-0.5 font-mono text-[10px] font-bold tracking-wider text-amber-soft">
+              SWARM
+            </span>
+          </div>
+          <p className="font-mono text-[11px] tracking-wide text-slate-500">
+            AUTONOMOUS TRADING FLOOR · {AGENT_IDS.length} ARMS / {AGENT_IDS.length} AGENTS
+          </p>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-x-6 gap-y-2 font-mono text-xs">
+        <Stat label="CYCLE" value={cycle.toLocaleString()} />
+        <Stat label="UPTIME" value={formatUptime(now - sessionStart)} />
+        <div className="flex items-center gap-1.5 rounded-full border border-profit/30 bg-profit/10 px-2.5 py-1">
+          <span className="h-1.5 w-1.5 animate-pulseDot rounded-full bg-profit shadow-[0_0_8px_2px_rgba(34,197,94,0.6)]" />
+          <span className="font-semibold text-profit">LIVE</span>
+        </div>
+        <button
+          onClick={toggleSound}
+          aria-label={soundEnabled ? 'Mute sound' : 'Enable sound'}
+          className="flex h-7 w-7 items-center justify-center rounded-md border border-void-border bg-void-raised text-slate-400 transition hover:border-amber/40 hover:text-amber-soft"
+        >
+          {soundEnabled ? <Volume2 size={14} /> : <VolumeX size={14} />}
+        </button>
+      </div>
+    </header>
+  )
+}
+
+function Stat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex flex-col leading-tight">
+      <span className="text-[10px] tracking-wider text-slate-600">{label}</span>
+      <span className="font-semibold text-slate-200" style={{ fontVariantNumeric: 'tabular-nums' }}>
+        {value}
+      </span>
+    </div>
+  )
+}
+
+function MascotMark() {
+  return (
+    <motion.div
+      className="relative flex h-10 w-10 items-center justify-center rounded-lg border border-amber/30 bg-void-raised shadow-[0_0_20px_-4px_rgba(245,158,11,0.5)]"
+      animate={{ boxShadow: ['0 0 14px -4px rgba(245,158,11,0.4)', '0 0 22px -2px rgba(245,158,11,0.7)', '0 0 14px -4px rgba(245,158,11,0.4)'] }}
+      transition={{ duration: 3, repeat: Infinity, ease: 'easeInOut' }}
+    >
+      <svg viewBox="0 0 32 32" width="22" height="22" fill="none">
+        <circle cx="16" cy="14" r="8" fill="#f59e0b" fillOpacity={0.9} />
+        <circle cx="13" cy="12" r="1.4" fill="#0a0a0f" />
+        <circle cx="19" cy="12" r="1.4" fill="#0a0a0f" />
+        {[0, 1, 2, 3].map((i) => (
+          <path
+            key={i}
+            d={`M ${9 + i * 5} 20 Q ${8 + i * 5} 26 ${10 + i * 5} 30`}
+            stroke="#f59e0b"
+            strokeWidth="2"
+            strokeLinecap="round"
+            fill="none"
+          />
+        ))}
+      </svg>
+    </motion.div>
+  )
+}
