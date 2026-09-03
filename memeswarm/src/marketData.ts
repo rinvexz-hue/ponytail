@@ -10,7 +10,17 @@ import type { MarketStatus, RealMarketTick } from './types'
 import { TICKER_SYMBOLS } from './lib/agents'
 
 const SEARCH_ENDPOINT = 'https://api.dexscreener.com/latest/dex/search'
-const POLL_INTERVAL_MS = 10_000
+// The real risk to EXIT's stop-loss/trailing thresholds isn't that the
+// percentages are wrong for meme-coin volatility — priceFor() already
+// reproduces Dexscreener's exact spot price the moment it's polled, and a
+// gap-through-the-threshold just closes at whatever price is next observed,
+// same as it would on a real exchange. The actual risk is staleness: a
+// position's price is frozen between polls, so a sharp move can sit
+// undetected for up to POLL_INTERVAL_MS before EXIT ever sees it. Polling
+// faster shrinks that window directly. 8 symbols every 5s is 96 req/min,
+// comfortably under Dexscreener's public rate limit (documented around
+// 300 req/min per IP), so this buys ~2x less staleness for free.
+const POLL_INTERVAL_MS = 5_000
 
 export type MarketDataListener = (ticks: Record<string, RealMarketTick>) => void
 export type MarketStatusListener = (status: MarketStatus, detail?: string) => void
