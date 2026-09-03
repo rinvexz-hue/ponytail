@@ -33,7 +33,7 @@ const SPARKLINE_LEN = 30
 const EQUITY_SERIES_LEN = 60
 const MAX_POSITIONS = 6
 const LOG_MAX = 60
-const SEED_EQUITY = 50000
+const SEED_EQUITY = 5000
 
 // Exit discipline: cut losers fast, let winners run uncapped (only a
 // trailing stop, armed once meaningfully in profit, locks gains in).

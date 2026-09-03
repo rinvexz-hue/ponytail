@@ -5,7 +5,11 @@
 
 import type { Candle, LogEntry } from './types'
 
-const STORAGE_KEY = 'memeswarm:v1'
+// Bumped to v2 when the seed equity changed from $50,000 to $5,000 — old
+// saved state from the $50K seed would otherwise load back in and clash
+// with the new "seed $5.0K" label. Bump this again for any future change
+// that would make previously-saved data misleading rather than just stale.
+const STORAGE_KEY = 'memeswarm:v2'
 
 export interface PersistedPosition {
   id: string
