@@ -1,6 +1,7 @@
-import { motion } from 'framer-motion'
+import { useState } from 'react'
+import { AnimatePresence, motion } from 'framer-motion'
 import type { AgentId, AgentState } from '../types'
-import { AGENT_META } from '../lib/agents'
+import { AGENT_DESCRIPTIONS, AGENT_META } from '../lib/agents'
 import { AGENT_ICONS } from '../lib/agentIcons'
 import { Sparkline } from './Sparkline'
 import { formatPct } from '../lib/format'
@@ -19,10 +20,18 @@ export function AgentNode({ agentId, agent, x, y, selected, onSelect }: AgentNod
   const meta = AGENT_META[agentId]
   const Icon = AGENT_ICONS[agentId]
   const dotColor = statusColor(agent.status)
+  const [hovered, setHovered] = useState(false)
+  // Nodes near the top of the ring would push their tooltip off-screen if it
+  // always opened upward, so flip it below the node up there instead.
+  const openBelow = y < 35
 
   return (
     <motion.button
       onClick={() => onSelect(agentId)}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      onFocus={() => setHovered(true)}
+      onBlur={() => setHovered(false)}
       className="absolute z-10 flex h-11 w-11 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border bg-void-panel/95 shadow-panel backdrop-blur-sm sm:h-auto sm:w-[124px] sm:flex-col sm:items-stretch sm:justify-start sm:gap-1 sm:rounded-lg sm:px-2.5 sm:py-2 sm:text-left"
       style={{
         left: `${x}%`,
@@ -33,6 +42,30 @@ export function AgentNode({ agentId, agent, x, y, selected, onSelect }: AgentNod
       animate={agent.status === 'EXECUTING' ? { scale: [1, 1.04, 1] } : { scale: 1 }}
       transition={{ duration: 1.1, repeat: agent.status === 'EXECUTING' ? Infinity : 0, ease: 'easeInOut' }}
     >
+      <AnimatePresence>
+        {hovered && (
+          <motion.div
+            initial={{ opacity: 0, y: openBelow ? -4 : 4 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.15 }}
+            className={
+              'pointer-events-none absolute left-1/2 z-30 w-44 -translate-x-1/2 rounded-lg border bg-void-panel px-3 py-2 text-left shadow-panel ' +
+              (openBelow ? 'top-full mt-2' : 'bottom-full mb-2')
+            }
+            style={{ borderColor: meta.color }}
+          >
+            <div className="mb-1 flex items-center gap-1.5">
+              <Icon size={11} color={meta.color} />
+              <span className="font-mono text-[10px] font-bold tracking-wide" style={{ color: meta.color }}>
+                {meta.name}
+              </span>
+            </div>
+            <p className="font-mono text-[10px] leading-snug text-slate-300">{AGENT_DESCRIPTIONS[agentId]}</p>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* compact mobile badge */}
       <span className="relative flex items-center justify-center sm:hidden">
         <Icon size={16} color={meta.color} />

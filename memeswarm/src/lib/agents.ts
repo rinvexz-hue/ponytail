@@ -70,4 +70,17 @@ export const AGENT_META: Record<AgentId, AgentMeta> = {
   },
 }
 
+// One-sentence explanations shown on hover in SWARM CORE — what each agent
+// actually does, separate from the others, in plain language.
+export const AGENT_DESCRIPTIONS: Record<AgentId, string> = {
+  scout: 'Scans for freshly launched tokens and new liquidity pools the moment they appear on-chain.',
+  sniper: 'Fires the entry trade once SCOUT, SENTIMENT and WHALE-WATCH agree the setup is worth it.',
+  sentiment: 'Tracks social buzz and hype spikes for each token across crypto social media.',
+  whalewatch: 'Watches large wallets for accumulation or exit patterns that hint at where price is headed.',
+  liquidity: 'Monitors pool depth and sizes trades to avoid excessive slippage on thin books.',
+  risk: 'Screens contracts for rug-pull red flags and can veto an entry or force-close a position.',
+  exit: 'Runs the stop-loss and trailing-stop discipline that decides when a position closes.',
+  treasury: 'Settles fills, rebalances funds across venues, and sweeps profit.',
+}
+
 export const TICKER_SYMBOLS = ['PEPE', 'WIF', 'BONK', 'FLOKI', 'POPCAT', 'MEW', 'BRETT', 'TURBO']
