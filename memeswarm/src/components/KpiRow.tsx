@@ -74,6 +74,9 @@ export function KpiRow() {
         sub={
           <span className="font-mono text-[10px] text-slate-600">
             {kpis.wins}W / {kpis.losses}L · sharpe {kpis.sharpe.toFixed(2)}
+            {kpis.wins + kpis.losses < 20 && (
+              <span className="text-amber-soft"> · n={kpis.wins + kpis.losses}, low sample</span>
+            )}
           </span>
         }
       >

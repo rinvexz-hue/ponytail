@@ -183,6 +183,12 @@ function stdDev(arr: number[]) {
   return Math.sqrt(mean(arr.map((v) => (v - m) ** 2)))
 }
 
+function diffs(arr: number[]): number[] {
+  const out: number[] = []
+  for (let i = 1; i < arr.length; i++) out.push(arr[i] - arr[i - 1])
+  return out
+}
+
 function uid() {
   return Math.random().toString(36).slice(2, 10)
 }
@@ -630,7 +636,11 @@ class SwarmEngine {
       losses: this.losses,
       hitRatePct: totalTrades > 0 ? (this.wins / totalTrades) * 100 : 50,
       hitRateSeries: this.hitRateSeries,
-      sharpe: clamp(mean(this.pnlSeries.slice(-20)) / (stdDev(this.pnlSeries.slice(-20)) || 1), -3, 3),
+      // Sharpe-like ratio must be computed on RETURNS (tick-to-tick equity
+      // deltas), not on the raw cumulative pnlSeries level — mean/stddev of
+      // a monotonically trending level series is meaningless and pegs at
+      // the clamp ceiling almost immediately. Diff the equity curve first.
+      sharpe: clamp(mean(diffs(this.equitySeries.slice(-21))) / (stdDev(diffs(this.equitySeries.slice(-21))) || 1), -3, 3),
     }
   }
 
