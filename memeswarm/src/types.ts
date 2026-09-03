@@ -37,7 +37,23 @@ export interface TickerState {
   price: number
   changePct: number
   direction: 1 | -1
+  hasRealData: boolean
 }
+
+// Real, read-only market data pulled from a public API (Dexscreener) — no
+// wallet, no execution, just genuine prices. See marketData.ts.
+export interface RealMarketTick {
+  symbol: string
+  priceUsd: number
+  changePct: number
+  liquidityUsd: number
+  volume24h: number
+  chainId: string
+  pairUrl: string
+  updatedAt: number
+}
+
+export type MarketStatus = 'connecting' | 'live' | 'degraded' | 'error'
 
 export interface Candle {
   time: number

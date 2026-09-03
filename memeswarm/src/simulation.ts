@@ -15,6 +15,7 @@ import type {
   KpiState,
   LogEntry,
   Position,
+  RealMarketTick,
   SimEvent,
   SimState,
   TickListener,
@@ -199,6 +200,7 @@ interface EngineTicker {
   basePrice: number
   pct: number
   beta: number
+  hasRealData: boolean
 }
 
 interface EngineAgent {
@@ -225,12 +227,22 @@ class SwarmEngine {
   private sessionStart = Date.now()
   private marketFactor = 0
 
+  // Placeholder prices only — real ones (Dexscreener) land via
+  // applyRealMarketData() shortly after the engine starts. A ticker keeps
+  // this placeholder, marked hasRealData: false, until its first real fetch
+  // resolves; the UI shows those as "resolving" rather than inventing a price.
   private tickers: EngineTicker[] = TICKER_SYMBOLS.map((symbol, i) => ({
     symbol,
     basePrice: randRange(0.000002, 1.4) * (i % 3 === 0 ? 100 : 1),
     pct: randRange(-8, 8),
     beta: randRange(0.4, 1.1),
+    hasRealData: false,
   }))
+
+  // Real aggregate market momentum, derived from live prices — see
+  // applyRealMarketData(). marketFactor (below) drifts around this instead
+  // of around zero, so agent flavor/regime-gating tracks real conditions.
+  private realMarketFactor = 0
 
   private agents: Record<AgentId, EngineAgent> = Object.fromEntries(
     AGENT_IDS.map((id) => [
@@ -340,8 +352,15 @@ class SwarmEngine {
   private tick() {
     this.cycle += 1
 
-    // slow mean-reverting shared market factor drives coherent correlation
-    this.marketFactor = clamp(this.marketFactor + randNormal() * 0.05 - this.marketFactor * 0.04, -1, 1)
+    // Agent flavor still jitters tick to tick (we have no live sentiment/
+    // on-chain feed yet — see marketData.ts's module comment), but it now
+    // drifts around realMarketFactor (derived from real prices) instead of
+    // zero, so the swarm's "mood" tracks genuine market conditions.
+    this.marketFactor = clamp(
+      this.marketFactor + randNormal() * 0.03 + (this.realMarketFactor - this.marketFactor) * 0.06,
+      -1,
+      1,
+    )
 
     this.tickTickers()
     const flavorAppended = this.tickAgentsAndLog()
@@ -356,10 +375,33 @@ class SwarmEngine {
 
   private tickTickers() {
     for (const t of this.tickers) {
+      // Once a ticker has real Dexscreener data, its price/% change come
+      // ONLY from applyRealMarketData() — no synthetic movement layered on
+      // top. Before the first real fetch resolves, it fake-walks so the
+      // ticker bar isn't a dead placeholder while data is loading.
+      if (t.hasRealData) continue
       const move = t.beta * this.marketFactor * 0.6 + randNormal() * 0.5
       t.pct = clamp(t.pct + move, -95, 900)
-      // gentle mean reversion so tickers don't run away over a long session
       t.pct -= t.pct * 0.01
+    }
+  }
+
+  // Real prices flow in here (see store.ts wiring marketDataEngine to this).
+  // changePct is genuine (Dexscreener's 24h change) — we back-solve basePrice
+  // so priceFor() = basePrice*(1+pct/100) reproduces the real priceUsd exactly,
+  // without touching how the rest of the engine reads ticker prices.
+  applyRealMarketData(ticks: Record<string, RealMarketTick>) {
+    for (const t of this.tickers) {
+      const real = ticks[t.symbol]
+      if (!real) continue
+      t.pct = real.changePct
+      t.basePrice = real.priceUsd / (1 + real.changePct / 100)
+      t.hasRealData = true
+    }
+
+    const withData = this.tickers.filter((t) => t.hasRealData)
+    if (withData.length > 0) {
+      this.realMarketFactor = clamp(mean(withData.map((t) => t.pct)) / 10, -1, 1)
     }
   }
 
@@ -526,22 +568,26 @@ class SwarmEngine {
     if (Math.random() >= activeChance) return false
     if (this.openPositions.length >= MAX_POSITIONS) return false
 
+    const tradeable = this.tickers.filter((t) => t.hasRealData)
+    if (tradeable.length === 0) return false // no real prices yet — never invent an entry
+
     const riskGuarding = this.agents.risk.status === 'GUARDING'
     if (riskGuarding && Math.random() < RISK_VETO_CHANCE) {
-      this.pushLog({ agentId: 'sniper', action: 'BUY', token: choice(this.tickers).symbol, pnl: null, reason: RISK_VETO_REASON })
+      this.pushLog({ agentId: 'sniper', action: 'BUY', token: choice(tradeable).symbol, pnl: null, reason: RISK_VETO_REASON })
       return true
     }
 
     if (this.marketFactor <= ENTRY_REGIME_THRESHOLD) return false
 
     const signal = (this.agents.scout.value + this.agents.sentiment.value + this.agents.whalewatch.value) / 3
-    // Concentrate in the single most-leveraged ticker rather than spreading
-    // across several. Tested: diversifying entries across the top 2-3 beta
+    // Concentrate in the single ticker moving hardest right now (real 24h
+    // change) rather than spreading across several. Tested against the old
+    // synthetic beta-driven selection: diversifying entries across several
     // tickers measurably weakens the edge here, because this asset class's
     // return is fat-tailed (see PR notes) — spreading size across several
     // tickers dilutes the odds that any one open position rides that tail,
     // the same reason a small high-conviction desk runs concentrated books.
-    const best = this.tickers.reduce((a, b) => (b.beta > a.beta ? b : a))
+    const best = tradeable.reduce((a, b) => (Math.abs(b.pct) > Math.abs(a.pct) ? b : a))
     const token = best.symbol
     const sizeFrac = clamp(0.03 + signal * 0.006, 0.015, 0.12)
     const slip = this.slippageFor()
@@ -567,10 +613,11 @@ class SwarmEngine {
   }
 
   private tickEquity() {
-    // small mark-to-market drift on open exposure, on top of realized pnl above
-    const mtm = this.equity * (this.marketFactor * 0.0006 + randNormal() * 0.0004)
-    this.equity = Math.max(1000, this.equity + mtm)
-
+    // NET EQUITY is realized cash only (closePosition() is the only place
+    // that moves it) — no synthetic per-tick wobble. Unrealized P&L on open
+    // positions is tracked and displayed separately, from real prices, in
+    // buildPositions(). Equity genuinely stays flat between real closes,
+    // same as a real wallet balance would.
     if (this.equity > this.allTimeHighEquity) {
       this.allTimeHighEquity = this.equity
       this.emit({ type: 'ath', equity: this.equity })
@@ -669,6 +716,7 @@ class SwarmEngine {
       price: t.basePrice * (1 + t.pct / 100),
       changePct: t.pct,
       direction: t.pct >= 0 ? 1 : -1,
+      hasRealData: t.hasRealData,
     }))
 
     const agents = Object.fromEntries(

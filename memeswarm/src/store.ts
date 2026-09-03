@@ -1,11 +1,14 @@
 import { create } from 'zustand'
 import { swarmEngine } from './simulation'
+import { marketDataEngine } from './marketData'
 import { playSoundForEvent } from './sounds'
-import type { SimState } from './types'
+import type { MarketStatus, SimState } from './types'
 
 interface SwarmStore extends SimState {
   selectedAgentId: string | null
   selectAgent: (id: string | null) => void
+  marketStatus: MarketStatus
+  marketStatusDetail?: string
 }
 
 const initialState: SimState = {
@@ -44,6 +47,8 @@ export const useSwarmStore = create<SwarmStore>((set) => ({
   ...initialState,
   selectedAgentId: null,
   selectAgent: (id) => set({ selectedAgentId: id }),
+  marketStatus: 'connecting',
+  marketStatusDetail: undefined,
 }))
 
 // Singleton: the engine starts once per app lifetime and pushes snapshots
@@ -52,4 +57,12 @@ export const useSwarmStore = create<SwarmStore>((set) => ({
 swarmEngine.start(
   (snapshot) => useSwarmStore.setState(snapshot),
   (event) => playSoundForEvent(event),
+)
+
+// Real, read-only market data (Dexscreener) feeds straight into the sim
+// engine's tickers — see marketData.ts and simulation.ts's
+// applyRealMarketData(). No wallet, no execution, just genuine prices.
+marketDataEngine.start(
+  (ticks) => swarmEngine.applyRealMarketData(ticks),
+  (status, detail) => useSwarmStore.setState({ marketStatus: status, marketStatusDetail: detail }),
 )

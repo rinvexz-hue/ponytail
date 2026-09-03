@@ -5,10 +5,13 @@ import { useSwarmStore } from '../store'
 import { useSoundStore } from '../sounds'
 import { formatUptime } from '../lib/format'
 import { AGENT_IDS } from '../lib/agents'
+import type { MarketStatus } from '../types'
 
 export function Header() {
   const cycle = useSwarmStore((s) => s.cycle)
   const sessionStart = useSwarmStore((s) => s.sessionStart)
+  const marketStatus = useSwarmStore((s) => s.marketStatus)
+  const marketStatusDetail = useSwarmStore((s) => s.marketStatusDetail)
   const soundEnabled = useSoundStore((s) => s.enabled)
   const toggleSound = useSoundStore((s) => s.toggle)
 
@@ -40,6 +43,7 @@ export function Header() {
       <div className="flex flex-wrap items-center gap-x-6 gap-y-2 font-mono text-xs">
         <Stat label="CYCLE" value={cycle.toLocaleString()} />
         <Stat label="UPTIME" value={formatUptime(now - sessionStart)} />
+        <MarketStatusPill status={marketStatus} detail={marketStatusDetail} />
         <div className="flex items-center gap-1.5 rounded-full border border-profit/30 bg-profit/10 px-2.5 py-1">
           <span className="h-1.5 w-1.5 animate-pulseDot rounded-full bg-profit shadow-[0_0_8px_2px_rgba(34,197,94,0.6)]" />
           <span className="font-semibold text-profit">LIVE</span>
@@ -53,6 +57,29 @@ export function Header() {
         </button>
       </div>
     </header>
+  )
+}
+
+const MARKET_STATUS_META: Record<MarketStatus, { label: string; color: string; bg: string; border: string }> = {
+  live: { label: 'MARKET: LIVE', color: 'text-profit', bg: 'bg-profit/10', border: 'border-profit/30' },
+  connecting: { label: 'MARKET: CONNECTING', color: 'text-amber-soft', bg: 'bg-amber/10', border: 'border-amber/30' },
+  degraded: { label: 'MARKET: DEGRADED', color: 'text-amber-soft', bg: 'bg-amber/10', border: 'border-amber/30' },
+  error: { label: 'MARKET: OFFLINE', color: 'text-loss', bg: 'bg-loss/10', border: 'border-loss/30' },
+}
+
+function MarketStatusPill({ status, detail }: { status: MarketStatus; detail?: string }) {
+  const meta = MARKET_STATUS_META[status]
+  return (
+    <div
+      className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1 ${meta.bg} ${meta.border}`}
+      title={detail ?? 'Real, read-only prices from Dexscreener — no wallet, no execution.'}
+    >
+      <span
+        className={`h-1.5 w-1.5 rounded-full ${meta.color} ${status === 'live' ? 'animate-pulseDot' : ''}`}
+        style={{ backgroundColor: 'currentColor' }}
+      />
+      <span className={`font-semibold ${meta.color}`}>{meta.label}</span>
+    </div>
   )
 }
 
