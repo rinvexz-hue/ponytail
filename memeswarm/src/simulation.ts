@@ -33,6 +33,19 @@ const MAX_POSITIONS = 6
 const LOG_MAX = 60
 const SEED_EQUITY = 50000
 
+// Exit discipline: cut losers fast, let winners run uncapped (only a
+// trailing stop, armed once meaningfully in profit, locks gains in).
+// Tuned against a headless stats harness — see PR notes: a tight fixed
+// take-profit amputates the fat right tail that this asset class's returns
+// actually come from, while a trail that gives back more than it takes to
+// arm can still lock in a net loss. TRAIL must stay well under TRAIL_ARM.
+const STOP_LOSS_PCT = 0.07
+const TRAIL_ARM_PCT = 0.1
+const TRAIL_GIVEBACK_PCT = 0.05
+const MOONSHOT_SAFETY_MULT = 2.5 // extreme-case cap only, almost never hit
+const ENTRY_REGIME_THRESHOLD = 0.08 // only buy when the shared market factor is favorable
+const RISK_VETO_CHANCE = 0.5 // chance RISK blocks a new entry while GUARDING
+
 const ACTIONS_BY_AGENT: Record<AgentId, ActionType[]> = {
   scout: ['ROUTE', 'QUOTE'],
   sniper: ['BUY'],
@@ -76,7 +89,6 @@ const REASONS_BY_AGENT: Record<AgentId, string[]> = {
     'LP unlock detected',
   ],
   risk: [
-    'rug risk flagged — exited',
     'contract ownership renounced',
     'honeypot check passed',
     'mint authority still active',
@@ -95,6 +107,9 @@ const REASONS_BY_AGENT: Record<AgentId, string[]> = {
     'profit swept to treasury',
   ],
 }
+
+const RISK_FLAG_REASON = 'rug risk flagged — exited'
+const RISK_VETO_REASON = 'entry blocked — risk desk vetoed'
 
 const AGENT_BETA: Record<AgentId, number> = {
   scout: 0.3,
@@ -192,6 +207,7 @@ interface EnginePosition {
   id: string
   token: string
   entryPrice: number
+  peakPrice: number
   units: number
   notional: number
   openedAtCycle: number
@@ -322,12 +338,14 @@ class SwarmEngine {
     this.marketFactor = clamp(this.marketFactor + randNormal() * 0.05 - this.marketFactor * 0.04, -1, 1)
 
     this.tickTickers()
-    const logAppended = this.tickAgentsAndLog()
+    const flavorAppended = this.tickAgentsAndLog()
+    const positionsAppended = this.tickPositions()
+    const entryAppended = this.tryOpenPosition()
     this.tickEquity()
     this.tickCandle()
     this.tickMeters()
 
-    this.pushOut(logAppended)
+    this.pushOut(flavorAppended || positionsAppended || entryAppended)
   }
 
   private tickTickers() {
@@ -362,6 +380,11 @@ class SwarmEngine {
       agent.value = clamp(agent.value + drift - agent.value * 0.05, -40, 40)
       agent.sparkline = pushCapped(agent.sparkline, agent.value, SPARKLINE_LEN)
 
+      // SNIPER and EXIT don't fire generic flavor log entries — their real
+      // activity comes from tryOpenPosition()/tickPositions() below, which
+      // are actually wired to the positions they open and close.
+      if (id === 'sniper' || id === 'exit') continue
+
       const activeChance = agent.status === 'EXECUTING' ? 0.55 : agent.status === 'SCANNING' ? 0.2 : agent.status === 'GUARDING' ? 0.15 : 0.05
       if (Math.random() < activeChance) {
         this.appendLogEntry(id)
@@ -378,49 +401,31 @@ class SwarmEngine {
     return t.basePrice * (1 + t.pct / 100)
   }
 
+  private slippageFor(): number {
+    // worse LIQUIDITY reading -> thinner book -> more slippage on fills
+    const liquidityValue = this.agents.liquidity.value
+    return clamp(0.0012 - liquidityValue * 0.00015, 0.0002, 0.006)
+  }
+
+  private maybeDriftVenues() {
+    if (Math.random() < 0.04) {
+      this.venues = Math.round(clamp(this.venues + (Math.random() < 0.5 ? -1 : 1), 3, 9))
+    }
+  }
+
+  private pushLog(entry: Omit<LogEntry, 'id' | 'cycle' | 'timestamp'>) {
+    const full: LogEntry = { id: uid(), cycle: this.cycle, timestamp: Date.now(), ...entry }
+    this.log = [full, ...this.log].slice(0, LOG_MAX)
+  }
+
   private appendLogEntry(agentId: AgentId) {
     const action = choice(ACTIONS_BY_AGENT[agentId])
     const reason = choice(REASONS_BY_AGENT[agentId])
-    let token = choice(this.tickers).symbol
+    const token = choice(this.tickers).symbol
 
     let pnl: number | null = null
-    if (action === 'BUY') {
-      if (this.openPositions.length < MAX_POSITIONS) {
-        const entryPrice = this.priceFor(token)
-        const notional = this.equity * randRange(0.03, 0.09)
-        this.openPositions.push({
-          id: uid(),
-          token,
-          entryPrice,
-          units: notional / entryPrice,
-          notional,
-          openedAtCycle: this.cycle,
-          openedAt: Date.now(),
-        })
-      }
-    } else if (action === 'SELL') {
-      if (this.openPositions.length > 0) {
-        const idx = Math.floor(Math.random() * this.openPositions.length)
-        const [closed] = this.openPositions.splice(idx, 1)
-        token = closed.token
-        pnl = (this.priceFor(closed.token) - closed.entryPrice) * closed.units
-        if (pnl > 0) this.wins += 1
-        else this.losses += 1
-        this.resolvedCount += 1
-      } else {
-        const winBias = 0.5 + this.marketFactor * 0.15 + 0.08
-        const isWin = Math.random() < clamp(winBias, 0.35, 0.78)
-        const magnitude = this.equity * randRange(0.001, 0.018)
-        pnl = isWin ? magnitude : -magnitude * randRange(0.4, 1)
-        if (isWin) this.wins += 1
-        else this.losses += 1
-        this.resolvedCount += 1
-      }
-    } else if (action === 'FILL' && Math.random() < 0.5) {
+    if (action === 'FILL' && Math.random() < 0.5) {
       pnl = randRange(-40, 60)
-    } else if (action === 'HEDGE' && reason.includes('flagged')) {
-      pnl = -this.equity * randRange(0.0005, 0.004)
-      this.emit({ type: 'riskFlag', agentId })
     }
 
     if (pnl !== null) {
@@ -429,26 +434,130 @@ class SwarmEngine {
       else if (pnl < 0) this.emit({ type: 'loss', agentId, pnl })
     }
 
-    if (action === 'BUY' || action === 'SELL' || action === 'FILL') {
+    if (action === 'FILL') {
       this.fills += 1
       this.volume24h += this.equity * randRange(0.0008, 0.006)
     }
 
-    if (Math.random() < 0.04) {
-      this.venues = Math.round(clamp(this.venues + (Math.random() < 0.5 ? -1 : 1), 3, 9))
+    this.maybeDriftVenues()
+    this.pushLog({ agentId, action, token, pnl, reason })
+  }
+
+  // EXIT's discipline: cut a loser fast (STOP_LOSS_PCT), let a winner run
+  // uncapped (only a trailing stop, armed once meaningfully in profit).
+  // RISK's discipline: on a flag, force-close the single worst open
+  // position immediately, regardless of EXIT's own rules.
+  private tickPositions(): boolean {
+    let appended = false
+    const riskAgent = this.agents.risk
+    const riskActiveChance = riskAgent.status === 'GUARDING' ? 0.15 : 0.05
+
+    if (this.openPositions.length > 0 && Math.random() < riskActiveChance && Math.random() < 0.2) {
+      let worstIdx = 0
+      let worstPnl = Infinity
+      this.openPositions.forEach((p, i) => {
+        const pnl = (this.priceFor(p.token) - p.entryPrice) * p.units
+        if (pnl < worstPnl) {
+          worstPnl = pnl
+          worstIdx = i
+        }
+      })
+      const [closed] = this.openPositions.splice(worstIdx, 1)
+      this.closePosition(closed, 'risk', 'HEDGE', RISK_FLAG_REASON)
+      this.emit({ type: 'riskFlag', agentId: 'risk' })
+      appended = true
     }
 
-    const entry: LogEntry = {
-      id: uid(),
-      cycle: this.cycle,
-      timestamp: Date.now(),
-      agentId,
-      action,
-      token,
-      pnl,
-      reason,
+    for (let i = this.openPositions.length - 1; i >= 0; i--) {
+      const p = this.openPositions[i]
+      const current = this.priceFor(p.token)
+      p.peakPrice = Math.max(p.peakPrice, current)
+
+      let reason: string | null = null
+      if (current <= p.entryPrice * (1 - STOP_LOSS_PCT)) reason = 'stop-loss triggered'
+      else if (current >= p.entryPrice * MOONSHOT_SAFETY_MULT) reason = 'take-profit target hit'
+      else if (current > p.entryPrice * (1 + TRAIL_ARM_PCT) && current <= p.peakPrice * (1 - TRAIL_GIVEBACK_PCT)) {
+        reason = 'trailing stop executed'
+      }
+
+      if (reason) {
+        this.openPositions.splice(i, 1)
+        this.closePosition(p, 'exit', 'SELL', reason)
+        appended = true
+      }
     }
-    this.log = [entry, ...this.log].slice(0, LOG_MAX)
+
+    return appended
+  }
+
+  private closePosition(p: EnginePosition, agentId: AgentId, action: ActionType, reason: string) {
+    const slip = this.slippageFor()
+    const exitPrice = this.priceFor(p.token) * (1 - slip)
+    const pnl = (exitPrice - p.entryPrice) * p.units
+
+    this.equity += pnl
+    if (pnl > 0) {
+      this.wins += 1
+      this.emit({ type: 'profit', agentId, pnl })
+    } else {
+      this.losses += 1
+      if (pnl < 0) this.emit({ type: 'loss', agentId, pnl })
+    }
+    this.resolvedCount += 1
+    this.fills += 1
+    this.volume24h += this.equity * randRange(0.0008, 0.006)
+
+    this.maybeDriftVenues()
+    this.pushLog({ agentId, action, token: p.token, pnl, reason })
+  }
+
+  // SNIPER's discipline: only buy with the regime (marketFactor trending
+  // up), size to conviction (SCOUT/SENTIMENT/WHALE-WATCH consensus), pick
+  // the ticker most leveraged to that regime, and respect a RISK veto.
+  private tryOpenPosition(): boolean {
+    const agent = this.agents.sniper
+    const activeChance = agent.status === 'EXECUTING' ? 0.55 : agent.status === 'SCANNING' ? 0.2 : agent.status === 'GUARDING' ? 0.15 : 0.05
+    if (Math.random() >= activeChance) return false
+    if (this.openPositions.length >= MAX_POSITIONS) return false
+
+    const riskGuarding = this.agents.risk.status === 'GUARDING'
+    if (riskGuarding && Math.random() < RISK_VETO_CHANCE) {
+      this.pushLog({ agentId: 'sniper', action: 'BUY', token: choice(this.tickers).symbol, pnl: null, reason: RISK_VETO_REASON })
+      return true
+    }
+
+    if (this.marketFactor <= ENTRY_REGIME_THRESHOLD) return false
+
+    const signal = (this.agents.scout.value + this.agents.sentiment.value + this.agents.whalewatch.value) / 3
+    // Concentrate in the single most-leveraged ticker rather than spreading
+    // across several. Tested: diversifying entries across the top 2-3 beta
+    // tickers measurably weakens the edge here, because this asset class's
+    // return is fat-tailed (see PR notes) — spreading size across several
+    // tickers dilutes the odds that any one open position rides that tail,
+    // the same reason a small high-conviction desk runs concentrated books.
+    const best = this.tickers.reduce((a, b) => (b.beta > a.beta ? b : a))
+    const token = best.symbol
+    const sizeFrac = clamp(0.03 + signal * 0.006, 0.015, 0.12)
+    const slip = this.slippageFor()
+    const entryPrice = this.priceFor(token) * (1 + slip)
+    const notional = this.equity * sizeFrac
+
+    this.openPositions.push({
+      id: uid(),
+      token,
+      entryPrice,
+      peakPrice: entryPrice,
+      units: notional / entryPrice,
+      notional,
+      openedAtCycle: this.cycle,
+      openedAt: Date.now(),
+    })
+
+    this.fills += 1
+    this.volume24h += this.equity * randRange(0.0008, 0.006)
+    this.maybeDriftVenues()
+    this.pushLog({ agentId: 'sniper', action: 'BUY', token, pnl: null, reason: choice(REASONS_BY_AGENT.sniper) })
+    return true
   }
 
   private tickEquity() {
