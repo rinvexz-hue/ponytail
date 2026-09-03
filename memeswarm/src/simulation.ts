@@ -22,6 +22,7 @@ import type {
   TickerState,
 } from './types'
 import { AGENT_IDS, TICKER_SYMBOLS } from './lib/agents'
+import { loadPersistedState, savePersistedState } from './persistence'
 
 // ---------- tunables ----------
 const MIN_TICK_MS = 250
@@ -284,8 +285,69 @@ class SwarmEngine {
   private tickListeners = new Set<TickListener>()
   private eventListeners = new Set<EventListener>()
 
+  private lastPersistAt = 0
+  private unloadListenersAttached = false
+
   constructor() {
-    this.seedCandles()
+    if (!this.hydrateFromStorage()) this.seedCandles()
+  }
+
+  // Restores equity, positions, the trade log, and balance history from this
+  // browser's localStorage (see persistence.ts) so a page reload doesn't
+  // wipe out a session's trading. Ticker prices/agent flavor are NOT
+  // restored — those re-resolve within seconds from Dexscreener and the
+  // regular tick loop, and persisting them would just be stale noise.
+  private hydrateFromStorage(): boolean {
+    const saved = loadPersistedState()
+    if (!saved) return false
+    this.cycle = saved.cycle
+    this.equity = saved.equity
+    this.equitySeries = saved.equitySeries
+    this.pnlSeries = saved.pnlSeries
+    this.hitRateSeries = saved.hitRateSeries
+    this.allTimeHighEquity = saved.allTimeHighEquity
+    this.volume24h = saved.volume24h
+    this.fills = saved.fills
+    this.venues = saved.venues
+    this.wins = saved.wins
+    this.losses = saved.losses
+    this.resolvedCount = saved.resolvedCount
+    this.log = saved.log
+    this.openPositions = saved.openPositions
+    this.candles = saved.candles
+    this.movingAverage = saved.movingAverage
+    return true
+  }
+
+  private persistNow() {
+    savePersistedState({
+      cycle: this.cycle,
+      equity: this.equity,
+      equitySeries: this.equitySeries,
+      pnlSeries: this.pnlSeries,
+      hitRateSeries: this.hitRateSeries,
+      allTimeHighEquity: this.allTimeHighEquity,
+      volume24h: this.volume24h,
+      fills: this.fills,
+      venues: this.venues,
+      wins: this.wins,
+      losses: this.losses,
+      resolvedCount: this.resolvedCount,
+      log: this.log,
+      openPositions: this.openPositions,
+      candles: this.candles,
+      movingAverage: this.movingAverage,
+    })
+  }
+
+  // Throttled to once every few seconds — the tick loop runs 1-4x/second and
+  // writing to localStorage on every tick would be wasteful I/O for data
+  // that only needs to survive an accidental reload, not every millisecond.
+  private maybePersist() {
+    const now = Date.now()
+    if (now - this.lastPersistAt < 4000) return
+    this.lastPersistAt = now
+    this.persistNow()
   }
 
   private seedCandles() {
@@ -325,6 +387,17 @@ class SwarmEngine {
     this.tickListeners.add(onTick)
     if (onEvent) this.eventListeners.add(onEvent)
     if (!this.timeoutId) this.scheduleNext()
+
+    // Belt-and-braces save on tab close/refresh — the throttled save in
+    // tick() covers normal play, but the last few seconds before closing
+    // the tab could otherwise be lost.
+    if (!this.unloadListenersAttached && typeof window !== 'undefined') {
+      this.unloadListenersAttached = true
+      const flush = () => this.persistNow()
+      window.addEventListener('pagehide', flush)
+      window.addEventListener('beforeunload', flush)
+    }
+
     onTick(this.snapshot(true))
     return () => {
       this.tickListeners.delete(onTick)
@@ -369,6 +442,7 @@ class SwarmEngine {
     this.tickEquity()
     this.tickCandle()
     this.tickMeters()
+    this.maybePersist()
 
     this.pushOut(flavorAppended || positionsAppended || entryAppended)
   }
