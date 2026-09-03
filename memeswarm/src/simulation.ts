@@ -23,6 +23,18 @@ import type {
 } from './types'
 import { AGENT_IDS, TICKER_SYMBOLS } from './lib/agents'
 import { loadPersistedState, savePersistedState } from './persistence'
+import { clamp, choice, diffs, mean, randNormal, randRange, stdDev, uid } from './lib/math'
+import {
+  AGENT_BETA,
+  ENTRY_REGIME_THRESHOLD,
+  MAX_POSITIONS,
+  MOONSHOT_SAFETY_MULT,
+  RISK_VETO_CHANCE,
+  SEED_EQUITY,
+  STOP_LOSS_PCT,
+  TRAIL_ARM_PCT,
+  TRAIL_GIVEBACK_PCT,
+} from './tuning'
 
 // ---------- tunables ----------
 const MIN_TICK_MS = 250
@@ -31,22 +43,7 @@ const CANDLE_COUNT = 24
 const TICKS_PER_CANDLE = 20
 const SPARKLINE_LEN = 30
 const EQUITY_SERIES_LEN = 60
-const MAX_POSITIONS = 6
 const LOG_MAX = 60
-const SEED_EQUITY = 5000
-
-// Exit discipline: cut losers fast, let winners run uncapped (only a
-// trailing stop, armed once meaningfully in profit, locks gains in).
-// Tuned against a headless stats harness — see PR notes: a tight fixed
-// take-profit amputates the fat right tail that this asset class's returns
-// actually come from, while a trail that gives back more than it takes to
-// arm can still lock in a net loss. TRAIL must stay well under TRAIL_ARM.
-const STOP_LOSS_PCT = 0.07
-const TRAIL_ARM_PCT = 0.1
-const TRAIL_GIVEBACK_PCT = 0.05
-const MOONSHOT_SAFETY_MULT = 2.5 // extreme-case cap only, almost never hit
-const ENTRY_REGIME_THRESHOLD = 0.08 // only buy when the shared market factor is favorable
-const RISK_VETO_CHANCE = 0.5 // chance RISK blocks a new entry while GUARDING
 
 const ACTIONS_BY_AGENT: Record<AgentId, ActionType[]> = {
   scout: ['ROUTE', 'QUOTE'],
@@ -113,17 +110,6 @@ const REASONS_BY_AGENT: Record<AgentId, string[]> = {
 const RISK_FLAG_REASON = 'rug risk flagged — exited'
 const RISK_VETO_REASON = 'entry blocked — risk desk vetoed'
 
-const AGENT_BETA: Record<AgentId, number> = {
-  scout: 0.3,
-  sniper: 0.9,
-  sentiment: 0.6,
-  whalewatch: 0.5,
-  liquidity: 0.2,
-  risk: -0.4,
-  exit: 0.7,
-  treasury: 0.15,
-}
-
 const STATUS_WEIGHTS: Record<AgentId, Partial<Record<AgentState['status'], number>>> = {
   scout: { SCANNING: 5, EXECUTING: 2, STANDBY: 2, IDLE: 1 },
   sniper: { EXECUTING: 3, SCANNING: 3, STANDBY: 3, IDLE: 1 },
@@ -136,26 +122,9 @@ const STATUS_WEIGHTS: Record<AgentId, Partial<Record<AgentState['status'], numbe
 }
 
 // ---------- math helpers ----------
-function clamp(v: number, lo: number, hi: number) {
-  return Math.min(hi, Math.max(lo, v))
-}
-
-function randRange(min: number, max: number) {
-  return min + Math.random() * (max - min)
-}
-
-function randNormal() {
-  // Box-Muller
-  let u = 0
-  let v = 0
-  while (u === 0) u = Math.random()
-  while (v === 0) v = Math.random()
-  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v)
-}
-
-function choice<T>(arr: T[]): T {
-  return arr[Math.floor(Math.random() * arr.length)]
-}
+// clamp/randRange/randNormal/choice/mean/stdDev/diffs/uid now live in
+// ./lib/math so the backtester (backtest.ts) shares the exact same
+// implementations — see the import at the top of this file.
 
 function weightedStatus(weights: Partial<Record<AgentState['status'], number>>): AgentState['status'] {
   const entries = Object.entries(weights) as [AgentState['status'], number][]
@@ -172,27 +141,6 @@ function pushCapped(arr: number[], value: number, cap: number): number[] {
   const next = arr.length >= cap ? arr.slice(arr.length - cap + 1) : arr.slice()
   next.push(value)
   return next
-}
-
-function mean(arr: number[]) {
-  if (!arr.length) return 0
-  return arr.reduce((a, b) => a + b, 0) / arr.length
-}
-
-function stdDev(arr: number[]) {
-  if (arr.length < 2) return 0
-  const m = mean(arr)
-  return Math.sqrt(mean(arr.map((v) => (v - m) ** 2)))
-}
-
-function diffs(arr: number[]): number[] {
-  const out: number[] = []
-  for (let i = 1; i < arr.length; i++) out.push(arr[i] - arr[i - 1])
-  return out
-}
-
-function uid() {
-  return Math.random().toString(36).slice(2, 10)
 }
 
 // ---------- internal mutable engine state ----------
