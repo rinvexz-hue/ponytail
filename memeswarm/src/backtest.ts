@@ -22,11 +22,14 @@ import {
   AGENT_BETA,
   ENTRY_REGIME_THRESHOLD,
   LIQUIDITY_DEPTH_USD,
+  MAX_ENTRIES_PER_SESSION,
   MAX_POSITIONS,
+  MAX_SESSION_DRAWDOWN_PCT,
   MIN_SIGNAL_THRESHOLD,
   MOONSHOT_SAFETY_MULT,
   RISK_VETO_CHANCE,
   SEED_EQUITY,
+  SESSION_LENGTH_HOURS,
   STOP_LOSS_PCT,
   TRAIL_ARM_PCT,
   TRAIL_GIVEBACK_PCT,
@@ -78,6 +81,8 @@ export interface BacktestResult {
   worstTradePnl: number
   fills: number
   equityCurve: number[]
+  ticketCeilingBlocks: number
+  killSwitchBlocks: number
 }
 
 export function runBacktest(virtualHours: number): BacktestResult {
@@ -109,6 +114,17 @@ export function runBacktest(virtualHours: number): BacktestResult {
   const positions: BtPosition[] = []
   const equitySeries: number[] = [equity]
 
+  // Session-level risk containment (see tuning.ts): a hard cap on new
+  // entries per rolling session, plus a circuit breaker that halts new
+  // entries once the session's own drawdown gets too deep. Both reset when
+  // the session rolls over; neither touches positions already open.
+  const ticksPerSession = SESSION_LENGTH_HOURS * TICKS_PER_VIRTUAL_HOUR
+  let sessionStartTick = 0
+  let sessionStartEquity = equity
+  let sessionEntries = 0
+  let ticketCeilingBlocks = 0
+  let killSwitchBlocks = 0
+
   const priceFor = (t: BtTicker) => t.basePrice * (1 + t.pct / 100)
   // Base spread/depth slippage plus a market-impact term: a meme-coin pool
   // has finite real depth, so a position sized large relative to that depth
@@ -133,6 +149,12 @@ export function runBacktest(virtualHours: number): BacktestResult {
   const sampleEvery = Math.max(1, Math.floor(ticks / 300)) // downsample to ~300 points for the chart
 
   for (let i = 0; i < ticks; i++) {
+    if (i - sessionStartTick >= ticksPerSession) {
+      sessionStartTick = i
+      sessionStartEquity = equity
+      sessionEntries = 0
+    }
+
     // Same mean-reverting drift as the live engine before real prices land
     // (no live data to anchor to here, so it just reverts toward zero).
     marketFactor = clamp(marketFactor + randNormal() * 0.03 - marketFactor * 0.06, -1, 1)
@@ -218,7 +240,12 @@ export function runBacktest(virtualHours: number): BacktestResult {
     // while a plain unbiased pick performs as well or better and doesn't
     // rest on an unproven directional bet about price behavior.
     if (positions.length < MAX_POSITIONS && Math.random() < ENTRY_ATTEMPT_CHANCE && marketFactor > ENTRY_REGIME_THRESHOLD) {
-      if (Math.random() >= effectiveVetoChance) {
+      const killSwitchActive = equity <= sessionStartEquity * (1 - MAX_SESSION_DRAWDOWN_PCT / 100)
+      if (killSwitchActive) {
+        killSwitchBlocks += 1
+      } else if (sessionEntries >= MAX_ENTRIES_PER_SESSION) {
+        ticketCeilingBlocks += 1
+      } else if (Math.random() >= effectiveVetoChance) {
         const signal = (scoutVal + sentimentVal + whaleVal) / 3
         if (signal > MIN_SIGNAL_THRESHOLD) {
           const best = choice(tickers)
@@ -227,6 +254,7 @@ export function runBacktest(virtualHours: number): BacktestResult {
           const entryPrice = priceFor(best) * (1 + slippageFor(notional))
           positions.push({ token: best.symbol, entryPrice, peakPrice: entryPrice, units: notional / entryPrice, notional })
           fills += 1
+          sessionEntries += 1
         }
       }
     }
@@ -261,5 +289,7 @@ export function runBacktest(virtualHours: number): BacktestResult {
     worstTradePnl,
     fills,
     equityCurve: equitySeries,
+    ticketCeilingBlocks,
+    killSwitchBlocks,
   }
 }

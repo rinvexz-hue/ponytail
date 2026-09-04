@@ -41,6 +41,12 @@ const initialState: SimState = {
   armLoad: 0,
   gripTorque: 0,
   alignment: 0,
+  riskSession: {
+    entriesUsed: 0,
+    entryLimit: 0,
+    killSwitchActive: false,
+    resetsAt: Date.now(),
+  },
 }
 
 export const useSwarmStore = create<SwarmStore>((set) => ({

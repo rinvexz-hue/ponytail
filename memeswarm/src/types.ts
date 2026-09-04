@@ -106,6 +106,16 @@ export interface KpiState {
   sharpe: number
 }
 
+// Session-level risk containment status (see tuning.ts) — a hard cap on
+// new entries per rolling session plus a drawdown circuit breaker,
+// independent of any individual trade's signal quality.
+export interface RiskSessionState {
+  entriesUsed: number
+  entryLimit: number
+  killSwitchActive: boolean
+  resetsAt: number
+}
+
 export interface SimState {
   cycle: number
   sessionStart: number
@@ -120,6 +130,7 @@ export interface SimState {
   armLoad: number
   gripTorque: number
   alignment: number
+  riskSession: RiskSessionState
 }
 
 export type SimEvent =

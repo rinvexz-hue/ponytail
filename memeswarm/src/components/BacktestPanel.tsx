@@ -90,6 +90,8 @@ export function BacktestPanel() {
               <Stat label="MAX DRAWDOWN" value={`${result.maxDrawdownPct.toFixed(1)}%`} />
               <Stat label="BEST / WORST TRADE" value={`${formatSigned(result.bestTradePnl)} / ${formatSigned(result.worstTradePnl)}`} />
               <Stat label="FILLS" value={result.fills.toLocaleString()} />
+              <Stat label="TICKET CEILING BLOCKS" value={result.ticketCeilingBlocks.toLocaleString()} />
+              <Stat label="KILL-SWITCH BLOCKS" value={result.killSwitchBlocks.toLocaleString()} positive={result.killSwitchBlocks === 0} />
             </div>
             <div className="mt-3">
               <Sparkline data={result.equityCurve} color={result.totalPnl >= 0 ? '#22c55e' : '#ef4444'} height={40} />

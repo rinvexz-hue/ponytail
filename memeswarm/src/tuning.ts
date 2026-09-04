@@ -44,6 +44,25 @@ export const RISK_VETO_CHANCE = 0.5 // chance RISK blocks a new entry while GUAR
 // blocks the entry outright.
 export const MIN_SIGNAL_THRESHOLD = 0
 
+// Session-level risk containment, borrowed from a third-party desk's
+// public design writeup (a hard entry ceiling + a drawdown circuit
+// breaker, independent of how good any individual signal looks). Neither
+// touches the per-trade rules above — they cap how much damage a bad
+// *streak* can do regardless of entry quality.
+//
+// MAX_ENTRIES_PER_SESSION: even a well-tuned entry filter can still cluster
+// a run of correlated losers during one bad regime. At the current
+// ~8 entries/day average (see tuning notes above), a ceiling of 10 rarely
+// binds in normal conditions — verified via backtest.ts — but caps the
+// tail case where a hot-looking streak leads to over-concentration.
+export const MAX_ENTRIES_PER_SESSION = 10
+export const SESSION_LENGTH_HOURS = 24
+// Kill switch: once realized equity has dropped this % from where the
+// current session started, new entries are blocked until the next session
+// resets the baseline. Existing open positions still exit normally through
+// EXIT/RISK — this only stops the desk from adding to a losing streak.
+export const MAX_SESSION_DRAWDOWN_PCT = 15
+
 // How strongly each agent's "value" reading reacts to the shared market
 // factor — used both for the live agent sparklines and (for scout/
 // sentiment/whalewatch/liquidity) the backtester's simplified signal proxy.

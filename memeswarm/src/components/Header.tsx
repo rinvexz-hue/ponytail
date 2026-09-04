@@ -5,13 +5,14 @@ import { useSwarmStore } from '../store'
 import { useSoundStore } from '../sounds'
 import { formatUptime } from '../lib/format'
 import { AGENT_IDS } from '../lib/agents'
-import type { MarketStatus } from '../types'
+import type { MarketStatus, RiskSessionState } from '../types'
 
 export function Header() {
   const cycle = useSwarmStore((s) => s.cycle)
   const sessionStart = useSwarmStore((s) => s.sessionStart)
   const marketStatus = useSwarmStore((s) => s.marketStatus)
   const marketStatusDetail = useSwarmStore((s) => s.marketStatusDetail)
+  const riskSession = useSwarmStore((s) => s.riskSession)
   const soundEnabled = useSoundStore((s) => s.enabled)
   const toggleSound = useSoundStore((s) => s.toggle)
 
@@ -44,6 +45,7 @@ export function Header() {
         <Stat label="CYCLE" value={cycle.toLocaleString()} />
         <Stat label="UPTIME" value={formatUptime(now - sessionStart)} />
         <MarketStatusPill status={marketStatus} detail={marketStatusDetail} />
+        <RiskSessionPill riskSession={riskSession} />
         <div className="flex items-center gap-1.5 rounded-full border border-profit/30 bg-profit/10 px-2.5 py-1">
           <span className="h-1.5 w-1.5 animate-pulseDot rounded-full bg-profit shadow-[0_0_8px_2px_rgba(34,197,94,0.6)]" />
           <span className="font-semibold text-profit">LIVE</span>
@@ -79,6 +81,29 @@ function MarketStatusPill({ status, detail }: { status: MarketStatus; detail?: s
         style={{ backgroundColor: 'currentColor' }}
       />
       <span className={`font-semibold ${meta.color}`}>{meta.label}</span>
+    </div>
+  )
+}
+
+function RiskSessionPill({ riskSession }: { riskSession: RiskSessionState }) {
+  const tripped = riskSession.killSwitchActive
+  const atCeiling = riskSession.entriesUsed >= riskSession.entryLimit
+  const blocked = tripped || atCeiling
+  return (
+    <div
+      className={
+        'flex items-center gap-1.5 rounded-full border px-2.5 py-1 ' +
+        (blocked ? 'border-loss/30 bg-loss/10' : 'border-void-border bg-void-raised')
+      }
+      title={
+        tripped
+          ? 'Kill-switch tripped — session drawdown limit hit, new entries paused until the session resets.'
+          : 'New entries this session vs. the hard per-session ceiling — caps how much a hot streak can over-concentrate.'
+      }
+    >
+      <span className={'font-semibold ' + (blocked ? 'text-loss' : 'text-slate-400')}>
+        {tripped ? 'KILL-SWITCH' : `TICKETS ${riskSession.entriesUsed}/${riskSession.entryLimit}`}
+      </span>
     </div>
   )
 }

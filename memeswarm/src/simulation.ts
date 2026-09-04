@@ -28,11 +28,14 @@ import {
   AGENT_BETA,
   ENTRY_REGIME_THRESHOLD,
   LIQUIDITY_DEPTH_USD,
+  MAX_ENTRIES_PER_SESSION,
   MAX_POSITIONS,
+  MAX_SESSION_DRAWDOWN_PCT,
   MIN_SIGNAL_THRESHOLD,
   MOONSHOT_SAFETY_MULT,
   RISK_VETO_CHANCE,
   SEED_EQUITY,
+  SESSION_LENGTH_HOURS,
   STOP_LOSS_PCT,
   TRAIL_ARM_PCT,
   TRAIL_GIVEBACK_PCT,
@@ -111,6 +114,8 @@ const REASONS_BY_AGENT: Record<AgentId, string[]> = {
 
 const RISK_FLAG_REASON = 'rug risk flagged — exited'
 const RISK_VETO_REASON = 'entry blocked — risk desk vetoed'
+const KILL_SWITCH_REASON = 'entry blocked — session kill-switch tripped'
+const TICKET_CEILING_REASON = 'entry blocked — session ticket ceiling reached'
 
 const STATUS_WEIGHTS: Record<AgentId, Partial<Record<AgentState['status'], number>>> = {
   scout: { SCANNING: 5, EXECUTING: 2, STANDBY: 2, IDLE: 1 },
@@ -237,6 +242,17 @@ class SwarmEngine {
 
   private lastPersistAt = 0
   private unloadListenersAttached = false
+
+  // Session-level risk containment (see tuning.ts): a hard cap on new
+  // entries per rolling real-time session, plus a circuit breaker that
+  // halts new entries once the session's own drawdown gets too deep.
+  // Neither touches positions already open — those still exit normally
+  // through EXIT/RISK.
+  private sessionStartAt = Date.now()
+  private sessionStartEquity = SEED_EQUITY
+  private sessionEntries = 0
+  private ticketCeilingBlocks = 0
+  private killSwitchBlocks = 0
 
   constructor() {
     if (!this.hydrateFromStorage()) this.seedCandles()
@@ -374,6 +390,12 @@ class SwarmEngine {
 
   private tick() {
     this.cycle += 1
+
+    if (Date.now() - this.sessionStartAt >= SESSION_LENGTH_HOURS * 60 * 60 * 1000) {
+      this.sessionStartAt = Date.now()
+      this.sessionStartEquity = this.equity
+      this.sessionEntries = 0
+    }
 
     // Agent flavor still jitters tick to tick (we have no live sentiment/
     // on-chain feed yet — see marketData.ts's module comment), but it now
@@ -623,6 +645,23 @@ class SwarmEngine {
     // premise. Now it's a hard gate, not just a sizing input.
     if (signal <= MIN_SIGNAL_THRESHOLD) return false
 
+    // Session risk containment (see tuning.ts): a circuit breaker that
+    // halts new entries once this session's own drawdown gets too deep,
+    // and a hard ceiling on new entries per session regardless of how good
+    // the signal looks — both independent of per-trade entry quality, to
+    // cap how much damage one bad streak can do.
+    const killSwitchActive = this.equity <= this.sessionStartEquity * (1 - MAX_SESSION_DRAWDOWN_PCT / 100)
+    if (killSwitchActive) {
+      this.killSwitchBlocks += 1
+      this.pushLog({ agentId: 'sniper', action: 'BUY', token: choice(tradeable).symbol, pnl: null, reason: KILL_SWITCH_REASON })
+      return true
+    }
+    if (this.sessionEntries >= MAX_ENTRIES_PER_SESSION) {
+      this.ticketCeilingBlocks += 1
+      this.pushLog({ agentId: 'sniper', action: 'BUY', token: choice(tradeable).symbol, pnl: null, reason: TICKET_CEILING_REASON })
+      return true
+    }
+
     // Picking whichever ticker is currently moving hardest (by |24h %|)
     // was tested and measurably hurts the edge: it's buying the local
     // extreme, in whichever direction it happens to be, right before the
@@ -649,6 +688,7 @@ class SwarmEngine {
     })
 
     this.fills += 1
+    this.sessionEntries += 1
     this.volume24h += this.equity * randRange(0.0008, 0.006)
     this.maybeDriftVenues()
     this.pushLog({ agentId: 'sniper', action: 'BUY', token, pnl: null, reason: choice(REASONS_BY_AGENT.sniper) })
@@ -793,6 +833,12 @@ class SwarmEngine {
       armLoad: this.armLoad,
       gripTorque: this.gripTorque,
       alignment: this.alignment,
+      riskSession: {
+        entriesUsed: this.sessionEntries,
+        entryLimit: MAX_ENTRIES_PER_SESSION,
+        killSwitchActive: this.equity <= this.sessionStartEquity * (1 - MAX_SESSION_DRAWDOWN_PCT / 100),
+        resetsAt: this.sessionStartAt + SESSION_LENGTH_HOURS * 60 * 60 * 1000,
+      },
     }
   }
 
