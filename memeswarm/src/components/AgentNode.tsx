@@ -24,6 +24,13 @@ export function AgentNode({ agentId, agent, x, y, selected, onSelect }: AgentNod
   // Nodes near the top of the ring would push their tooltip off-screen if it
   // always opened upward, so flip it below the node up there instead.
   const openBelow = y < 35
+  // Same idea horizontally: a tooltip centered on a node near the left/right
+  // edge of the ring runs past the container (or under a neighboring node)
+  // on narrow mobile widths, so anchor it to whichever side has room instead
+  // of always centering.
+  const anchorLeft = x < 35
+  const anchorRight = x > 65
+  const horizontalPositionClass = anchorLeft ? 'left-0' : anchorRight ? 'right-0' : 'left-1/2'
 
   return (
     <motion.button
@@ -44,16 +51,24 @@ export function AgentNode({ agentId, agent, x, y, selected, onSelect }: AgentNod
     >
       <AnimatePresence>
         {hovered && (
+          // AnimatePresence needs its direct child to be the motion
+          // component to animate the exit, so the centering transform can't
+          // live on a separate wrapper — instead it's passed as a static `x`
+          // in `style`, which framer-motion combines with the animated `y`
+          // into one transform. (A Tailwind `-translate-x-1/2` class here
+          // would silently lose to framer-motion's own transform instead.)
           <motion.div
             initial={{ opacity: 0, y: openBelow ? -4 : 4 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0 }}
             transition={{ duration: 0.15 }}
             className={
-              'pointer-events-none absolute left-1/2 z-30 w-44 -translate-x-1/2 rounded-lg border bg-void-panel px-3 py-2 text-left shadow-panel ' +
+              'pointer-events-none absolute z-30 w-44 rounded-lg border bg-void-panel px-3 py-2 text-left shadow-panel ' +
+              horizontalPositionClass +
+              ' ' +
               (openBelow ? 'top-full mt-2' : 'bottom-full mb-2')
             }
-            style={{ borderColor: meta.color }}
+            style={{ borderColor: meta.color, x: anchorLeft || anchorRight ? 0 : '-50%' }}
           >
             <div className="mb-1 flex items-center gap-1.5">
               <Icon size={11} color={meta.color} />
