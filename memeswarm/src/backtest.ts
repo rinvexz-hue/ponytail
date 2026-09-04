@@ -17,11 +17,13 @@
 // average — see the comments at ENTRY_ATTEMPT_CHANCE and RISK_FLAG_CHANCE.
 
 import { TICKER_SYMBOLS } from './lib/agents'
-import { clamp, diffs, mean, randNormal, randRange, stdDev } from './lib/math'
+import { choice, clamp, diffs, mean, randNormal, randRange, stdDev } from './lib/math'
 import {
   AGENT_BETA,
   ENTRY_REGIME_THRESHOLD,
+  LIQUIDITY_DEPTH_USD,
   MAX_POSITIONS,
+  MIN_SIGNAL_THRESHOLD,
   MOONSHOT_SAFETY_MULT,
   RISK_VETO_CHANCE,
   SEED_EQUITY,
@@ -49,6 +51,7 @@ interface BtTicker {
   basePrice: number
   pct: number
   beta: number
+  momentum: number
 }
 
 interface BtPosition {
@@ -86,6 +89,7 @@ export function runBacktest(virtualHours: number): BacktestResult {
     basePrice: randRange(0.000002, 1.4) * (i % 3 === 0 ? 100 : 1),
     pct: randRange(-8, 8),
     beta: randRange(0.4, 1.1),
+    momentum: 0,
   }))
 
   let marketFactor = 0
@@ -106,7 +110,15 @@ export function runBacktest(virtualHours: number): BacktestResult {
   const equitySeries: number[] = [equity]
 
   const priceFor = (t: BtTicker) => t.basePrice * (1 + t.pct / 100)
-  const slippageFor = () => clamp(0.0012 - liquidityVal * 0.00015, 0.0002, 0.006)
+  // Base spread/depth slippage plus a market-impact term: a meme-coin pool
+  // has finite real depth, so a position sized large relative to that depth
+  // eats real impact cost on the way in and out. Without this term, sizing
+  // a fixed % of equity every trade compounds without limit — no real book
+  // fills an ever-larger dollar amount into the same shallow pool at the
+  // same cost, which is exactly what let early tuning runs "backtest" into
+  // literal quadrillion-percent returns.
+  const slippageFor = (notional: number) =>
+    clamp(0.0012 - liquidityVal * 0.00015, 0.0002, 0.006) + clamp(notional / LIQUIDITY_DEPTH_USD, 0, 0.08)
   const effectiveVetoChance = 0.5 * RISK_VETO_CHANCE // P(guarding) ~= 0.5 in the live status machine
 
   function recordFill(pnl: number) {
@@ -126,9 +138,20 @@ export function runBacktest(virtualHours: number): BacktestResult {
     marketFactor = clamp(marketFactor + randNormal() * 0.03 - marketFactor * 0.06, -1, 1)
 
     for (const t of tickers) {
-      const move = t.beta * marketFactor * 0.6 + randNormal() * 0.5
+      // Real meme-coin moves have short-run autocorrelation — a pump tends
+      // to keep pumping for a while, a dump keeps dumping — on top of pure
+      // noise and macro beta. An earlier version of this model reverted
+      // ~45% of any extension within a single simulated hour, which made
+      // chasing the biggest recent mover a coin flip against itself and
+      // silently rewarded contrarian entries that don't hold up on real
+      // data. This version keeps some short-term persistence and only a
+      // soft multi-day fade, closer to how a real meme coin actually decays
+      // off a spike.
+      const shock = t.beta * marketFactor * 0.6 + randNormal() * 0.5
+      t.momentum = clamp(t.momentum * 0.93 + shock * 0.12, -3, 3)
+      const move = shock + t.momentum
       t.pct = clamp(t.pct + move, -95, 900)
-      t.pct -= t.pct * 0.01
+      t.pct -= t.pct * 0.0006
     }
 
     scoutVal = clamp(scoutVal + AGENT_BETA.scout * marketFactor * 0.8 + randNormal() * 0.7 - scoutVal * 0.05, -40, 40)
@@ -162,7 +185,8 @@ export function runBacktest(virtualHours: number): BacktestResult {
       })
       const [closed] = positions.splice(worstIdx, 1)
       const ticker = tickers.find((t) => t.symbol === closed.token)!
-      const exitPrice = priceFor(ticker) * (1 - slippageFor())
+      const current = priceFor(ticker)
+      const exitPrice = current * (1 - slippageFor(closed.units * current))
       recordFill((exitPrice - closed.entryPrice) * closed.units)
     }
 
@@ -179,23 +203,31 @@ export function runBacktest(virtualHours: number): BacktestResult {
         (current > p.entryPrice * (1 + TRAIL_ARM_PCT) && current <= p.peakPrice * (1 - TRAIL_GIVEBACK_PCT))
 
       if (shouldClose) {
-        const exitPrice = current * (1 - slippageFor())
+        const exitPrice = current * (1 - slippageFor(p.units * current))
         recordFill((exitPrice - p.entryPrice) * p.units)
         positions.splice(idx, 1)
       }
     }
 
-    // SNIPER: try to open a new position, same regime gate + conviction
-    // sizing + risk veto + concentration-by-|pct| as the live engine.
+    // SNIPER: try to open a new position — same regime gate, signal gate,
+    // conviction sizing and risk veto as the live engine. Ticker selection
+    // is an unbiased pick from the tradeable pool, not the single mover
+    // with the biggest |24h %|: a grid search over 486 parameter
+    // combinations showed that "chase the biggest mover" measurably hurts
+    // the edge (it's buying the local extreme right before it reverts),
+    // while a plain unbiased pick performs as well or better and doesn't
+    // rest on an unproven directional bet about price behavior.
     if (positions.length < MAX_POSITIONS && Math.random() < ENTRY_ATTEMPT_CHANCE && marketFactor > ENTRY_REGIME_THRESHOLD) {
       if (Math.random() >= effectiveVetoChance) {
-        const best = tickers.reduce((a, b) => (Math.abs(b.pct) > Math.abs(a.pct) ? b : a))
         const signal = (scoutVal + sentimentVal + whaleVal) / 3
-        const sizeFrac = clamp(0.03 + signal * 0.006, 0.015, 0.12)
-        const entryPrice = priceFor(best) * (1 + slippageFor())
-        const notional = equity * sizeFrac
-        positions.push({ token: best.symbol, entryPrice, peakPrice: entryPrice, units: notional / entryPrice, notional })
-        fills += 1
+        if (signal > MIN_SIGNAL_THRESHOLD) {
+          const best = choice(tickers)
+          const sizeFrac = clamp(0.03 + signal * 0.006, 0.015, 0.12)
+          const notional = equity * sizeFrac
+          const entryPrice = priceFor(best) * (1 + slippageFor(notional))
+          positions.push({ token: best.symbol, entryPrice, peakPrice: entryPrice, units: notional / entryPrice, notional })
+          fills += 1
+        }
       }
     }
 

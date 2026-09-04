@@ -27,7 +27,9 @@ import { clamp, choice, diffs, mean, randNormal, randRange, stdDev, uid } from '
 import {
   AGENT_BETA,
   ENTRY_REGIME_THRESHOLD,
+  LIQUIDITY_DEPTH_USD,
   MAX_POSITIONS,
+  MIN_SIGNAL_THRESHOLD,
   MOONSHOT_SAFETY_MULT,
   RISK_VETO_CHANCE,
   SEED_EQUITY,
@@ -471,10 +473,17 @@ class SwarmEngine {
     return t.basePrice * (1 + t.pct / 100)
   }
 
-  private slippageFor(): number {
-    // worse LIQUIDITY reading -> thinner book -> more slippage on fills
+  private slippageFor(notional: number): number {
+    // worse LIQUIDITY reading -> thinner book -> more slippage on fills, plus
+    // a market-impact term: a meme-coin pool has finite real depth, so a
+    // position sized large relative to that depth eats real impact cost on
+    // the way in and out. Without this, sizing a fixed % of equity every
+    // trade compounds without limit — no real book fills an ever-larger
+    // notional into the same shallow pool at the same cost.
     const liquidityValue = this.agents.liquidity.value
-    return clamp(0.0012 - liquidityValue * 0.00015, 0.0002, 0.006)
+    const baseSlip = clamp(0.0012 - liquidityValue * 0.00015, 0.0002, 0.006)
+    const impactSlip = clamp(notional / LIQUIDITY_DEPTH_USD, 0, 0.08)
+    return baseSlip + impactSlip
   }
 
   private maybeDriftVenues() {
@@ -561,8 +570,9 @@ class SwarmEngine {
   }
 
   private closePosition(p: EnginePosition, agentId: AgentId, action: ActionType, reason: string) {
-    const slip = this.slippageFor()
-    const exitPrice = this.priceFor(p.token) * (1 - slip)
+    const current = this.priceFor(p.token)
+    const slip = this.slippageFor(p.units * current)
+    const exitPrice = current * (1 - slip)
     const pnl = (exitPrice - p.entryPrice) * p.units
 
     this.equity += pnl
@@ -581,9 +591,14 @@ class SwarmEngine {
     this.pushLog({ agentId, action, token: p.token, pnl, reason })
   }
 
-  // SNIPER's discipline: only buy with the regime (marketFactor trending
-  // up), size to conviction (SCOUT/SENTIMENT/WHALE-WATCH consensus), pick
-  // the ticker most leveraged to that regime, and respect a RISK veto.
+  // SNIPER's discipline: only buy with a clearly-confirmed regime
+  // (marketFactor comfortably trending up, not just above zero), only when
+  // SCOUT/SENTIMENT/WHALE-WATCH's composite reading genuinely agrees (not
+  // just "not too bearish"), size to that conviction, and respect a RISK
+  // veto. Re-tuned via backtest.ts: firing on any marginal wobble produced
+  // thousands of low-quality trades a month and a reliably negative
+  // long-run edge (see tuning.ts). Waiting for real confirmation trades
+  // roughly 85% less often but wins much more often when it does.
   private tryOpenPosition(): boolean {
     const agent = this.agents.sniper
     const activeChance = agent.status === 'EXECUTING' ? 0.55 : agent.status === 'SCANNING' ? 0.2 : agent.status === 'GUARDING' ? 0.15 : 0.05
@@ -602,19 +617,25 @@ class SwarmEngine {
     if (this.marketFactor <= ENTRY_REGIME_THRESHOLD) return false
 
     const signal = (this.agents.scout.value + this.agents.sentiment.value + this.agents.whalewatch.value) / 3
-    // Concentrate in the single ticker moving hardest right now (real 24h
-    // change) rather than spreading across several. Tested against the old
-    // synthetic beta-driven selection: diversifying entries across several
-    // tickers measurably weakens the edge here, because this asset class's
-    // return is fat-tailed (see PR notes) — spreading size across several
-    // tickers dilutes the odds that any one open position rides that tail,
-    // the same reason a small high-conviction desk runs concentrated books.
-    const best = tradeable.reduce((a, b) => (Math.abs(b.pct) > Math.abs(a.pct) ? b : a))
+    // SNIPER only fires when the desk actually agrees — a negative
+    // composite reading used to still open a (smaller) position, which
+    // contradicted the "only fires when SCOUT/SENTIMENT/WHALE-WATCH agree"
+    // premise. Now it's a hard gate, not just a sizing input.
+    if (signal <= MIN_SIGNAL_THRESHOLD) return false
+
+    // Picking whichever ticker is currently moving hardest (by |24h %|)
+    // was tested and measurably hurts the edge: it's buying the local
+    // extreme, in whichever direction it happens to be, right before the
+    // asset's next move — no different from chasing a pump into its own
+    // dump. There's no per-ticker signal to genuinely pick a winner from
+    // here, so an unbiased pick from the real-data pool outperforms trying
+    // to be clever about it.
+    const best = choice(tradeable)
     const token = best.symbol
     const sizeFrac = clamp(0.03 + signal * 0.006, 0.015, 0.12)
-    const slip = this.slippageFor()
-    const entryPrice = this.priceFor(token) * (1 + slip)
     const notional = this.equity * sizeFrac
+    const slip = this.slippageFor(notional)
+    const entryPrice = this.priceFor(token) * (1 + slip)
 
     this.openPositions.push({
       id: uid(),
