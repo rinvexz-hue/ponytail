@@ -40,21 +40,45 @@ export const REAL_DATA_ASSETS: RealDataAsset[] = [
 const KLINES_ENDPOINT = 'https://api.binance.com/api/v3/klines'
 const MAX_CANDLES_PER_CALL = 1000
 // Caps how many pages a single request will fetch, so an oversized "days"
-// value can't turn into an unbounded number of calls.
-const MAX_CALLS = 8
+// value can't turn into an unbounded number of calls. 30 comfortably covers
+// the heaviest realistic combination (3Y at 1h ≈ 26k candles ≈ 27 calls).
+const MAX_CALLS = 30
 
-function intervalFor(days: number): { interval: string; msPerCandle: number } {
-  if (days <= 2) return { interval: '5m', msPerCandle: 5 * 60_000 }
-  if (days <= 10) return { interval: '15m', msPerCandle: 15 * 60_000 }
-  if (days <= 30) return { interval: '1h', msPerCandle: 60 * 60_000 }
-  if (days <= 200) return { interval: '4h', msPerCandle: 4 * 60 * 60_000 }
-  return { interval: '1d', msPerCandle: 24 * 60 * 60_000 }
+// 'auto' keeps the original behavior (coarser candles for a longer window,
+// so a default request stays fast and small). Picking an explicit
+// granularity overrides that — e.g. requesting 1h candles over a full year
+// on a low-volatility asset like BTC gives ~8,760 real decision points
+// instead of the 365 a forced daily default would produce. Same real data
+// either way, just more (or less) resolution on it.
+export type Granularity = 'auto' | '5m' | '15m' | '1h' | '4h' | '1d'
+
+const GRANULARITY_MS: Record<Exclude<Granularity, 'auto'>, number> = {
+  '5m': 5 * 60_000,
+  '15m': 15 * 60_000,
+  '1h': 60 * 60_000,
+  '4h': 4 * 60 * 60_000,
+  '1d': 24 * 60 * 60_000,
+}
+
+export const GRANULARITY_OPTIONS: Granularity[] = ['auto', '5m', '15m', '1h', '4h', '1d']
+
+function autoIntervalFor(days: number): { interval: string; msPerCandle: number } {
+  if (days <= 2) return { interval: '5m', msPerCandle: GRANULARITY_MS['5m'] }
+  if (days <= 10) return { interval: '15m', msPerCandle: GRANULARITY_MS['15m'] }
+  if (days <= 30) return { interval: '1h', msPerCandle: GRANULARITY_MS['1h'] }
+  if (days <= 200) return { interval: '4h', msPerCandle: GRANULARITY_MS['4h'] }
+  return { interval: '1d', msPerCandle: GRANULARITY_MS['1d'] }
 }
 
 type BinanceKline = [number, string, string, string, string, string, number, string, number, string, string, string]
 
-export async function fetchHistoricalCloses(pair: string, days: number): Promise<{ candles: RealCandle[]; msPerCandle: number }> {
-  const { interval, msPerCandle } = intervalFor(days)
+export async function fetchHistoricalCloses(
+  pair: string,
+  days: number,
+  granularity: Granularity = 'auto',
+): Promise<{ candles: RealCandle[]; msPerCandle: number }> {
+  const { interval, msPerCandle } =
+    granularity === 'auto' ? autoIntervalFor(days) : { interval: granularity, msPerCandle: GRANULARITY_MS[granularity] }
   const endTime = Date.now()
   const startTime = endTime - days * 24 * 60 * 60 * 1000
   const candlesNeeded = Math.ceil((endTime - startTime) / msPerCandle)

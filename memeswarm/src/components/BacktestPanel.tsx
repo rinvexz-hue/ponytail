@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { runBacktest, runBacktestOnRealCandles } from '../backtest'
 import type { BacktestResult } from '../backtest'
-import { fetchHistoricalCloses, REAL_DATA_ASSETS } from '../lib/historicalData'
+import { fetchHistoricalCloses, GRANULARITY_OPTIONS, REAL_DATA_ASSETS } from '../lib/historicalData'
+import type { Granularity } from '../lib/historicalData'
 import { Sparkline } from './Sparkline'
 import { formatPct, formatSigned, formatUsd } from '../lib/format'
 
@@ -24,6 +25,7 @@ export function BacktestPanel() {
   const [hoursInput, setHoursInput] = useState('168')
   const [daysInput, setDaysInput] = useState('365')
   const [symbol, setSymbol] = useState(REAL_DATA_ASSETS[0].pair)
+  const [granularity, setGranularity] = useState<Granularity>('auto')
   const [running, setRunning] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<BacktestResult | null>(null)
@@ -51,7 +53,7 @@ export function BacktestPanel() {
     setError(null)
     setRunning(true)
     const asset = REAL_DATA_ASSETS.find((a) => a.pair === symbol) ?? REAL_DATA_ASSETS[0]
-    fetchHistoricalCloses(asset.pair, days)
+    fetchHistoricalCloses(asset.pair, days, granularity)
       .then(({ candles, msPerCandle }) => {
         const res = runBacktestOnRealCandles(candles, msPerCandle, asset.label)
         setResult(res)
@@ -177,6 +179,20 @@ export function BacktestPanel() {
                 className="w-20 rounded-md border border-void-border bg-void-raised px-2 py-1 font-mono text-[11px] text-slate-200 outline-none focus:border-amber/50"
               />
               <span className="font-mono text-[10px] text-slate-600">days</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="font-mono text-[10px] text-slate-600">candles</span>
+              <select
+                value={granularity}
+                onChange={(e) => setGranularity(e.target.value as Granularity)}
+                className="rounded-md border border-void-border bg-void-raised px-2 py-1 font-mono text-[11px] text-slate-200 outline-none focus:border-amber/50"
+              >
+                {GRANULARITY_OPTIONS.map((g) => (
+                  <option key={g} value={g}>
+                    {g === 'auto' ? 'AUTO' : g}
+                  </option>
+                ))}
+              </select>
             </div>
             <button
               onClick={run}
