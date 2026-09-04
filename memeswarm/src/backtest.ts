@@ -319,9 +319,52 @@ export function runBacktest(virtualHours: number): BacktestResult {
 // There is also only one asset in play per run, so "pick the best ticker"
 // collapses to "the one you picked" — MAX_POSITIONS effectively caps at 1
 // concurrent position instead of spreading across a basket.
-
+//
+// Two things this mode deliberately does NOT inherit as fixed constants from
+// the synthetic path, both found by re-deriving the math rather than by
+// tuning against a target return (see the module comment on why that
+// distinction matters):
+//
+// 1. marketFactor's innovation term must use the SAME 0.03 coefficient the
+//    synthetic engine uses for randNormal() — z is already a rolling
+//    z-score (~unit variance, same as randNormal()), so any other
+//    coefficient changes marketFactor's steady-state volatility and silently
+//    shifts what ENTRY_REGIME_THRESHOLD=0.18 actually means. (An earlier
+//    version of this file used 0.06 here — double the synthetic engine's
+//    calibration — which let the entry gate fire on much weaker conviction
+//    than intended and diluted the edge with lower-quality entries.)
+// 2. STOP_LOSS_PCT/TRAIL_ARM_PCT/MOONSHOT_SAFETY_MULT (tuning.ts) are fixed
+//    percentages calibrated against the synthetic engine's meme-coin-scale
+//    moves. Real assets span a much wider range (BTC's daily moves are a
+//    fraction of a meme coin's) — a fixed 5% stop is tight enough to matter
+//    for BTC but loose enough to rarely matter for a genuinely volatile
+//    micro-cap. Real-data mode instead sizes each position's exits off the
+//    volatility actually observed at entry (an ATR-style stop), so the same
+//    "how many standard deviations of adverse move before this trade is
+//    wrong" logic applies whether the asset picked is BTC or a meme coin.
 const REAL_VOL_WINDOW = 20 // candles of trailing returns used to scale a fresh return into a z-score
 const REAL_VOL_FLOOR = 0.005 // avoids dividing by ~0 during a dead-flat stretch
+
+// Volatility-relative exit sizing — multiples of the per-candle return
+// stdev observed at entry, clamped to sane absolute bounds so a dead-flat
+// or extreme-vol stretch can't produce a degenerate (near-zero or
+// never-triggers) threshold.
+const STOP_LOSS_VOL_MULT = 2.5
+const STOP_LOSS_MIN_PCT = 0.015
+const STOP_LOSS_MAX_PCT = 0.12
+const TRAIL_ARM_VOL_MULT = 4
+const TRAIL_ARM_MIN_PCT = 0.03
+const TRAIL_ARM_MAX_PCT = 0.2
+const TRAIL_GIVEBACK_VOL_MULT = 1.2
+const TRAIL_GIVEBACK_MIN_PCT = 0.01
+const TRAIL_GIVEBACK_MAX_PCT = 0.06
+const MOONSHOT_VOL_MULT = 20
+const MOONSHOT_MIN_GAIN = 0.3
+const MOONSHOT_MAX_GAIN = 3.0
+
+interface RealPosition extends BtPosition {
+  entryVol: number
+}
 
 export function runBacktestOnRealCandles(
   candles: { time: number; close: number }[],
@@ -351,7 +394,7 @@ export function runBacktestOnRealCandles(
   let fills = 0
   let bestTradePnl = 0
   let worstTradePnl = 0
-  let position: BtPosition | null = null
+  let position: RealPosition | null = null
   const equitySeries: number[] = [equity]
 
   const ticksPerSession = Math.max(1, Math.round((SESSION_LENGTH_HOURS * 60 * 60_000) / msPerCandle))
@@ -386,8 +429,9 @@ export function runBacktestOnRealCandles(
       sessionEntries = 0
     }
 
-    const z = clamp(returns[i] / rollingStd(i), -5, 5)
-    marketFactor = clamp(marketFactor + z * 0.06 - marketFactor * 0.06, -1, 1)
+    const vol = rollingStd(i)
+    const z = clamp(returns[i] / vol, -5, 5)
+    marketFactor = clamp(marketFactor + z * 0.03 - marketFactor * 0.06, -1, 1)
     const price = closes[i + 1]
 
     scoutVal = clamp(scoutVal + AGENT_BETA.scout * marketFactor * 0.8 + z * 0.7 - scoutVal * 0.05, -40, 40)
@@ -401,13 +445,23 @@ export function runBacktestOnRealCandles(
       position = null
     }
 
-    // EXIT: stop-loss / moonshot safety cap / trailing stop.
+    // EXIT: stop-loss / moonshot safety cap / trailing stop, all sized off
+    // the volatility observed when THIS position was opened (see the
+    // module comment above) rather than the synthetic engine's fixed %s.
     if (position) {
       position.peakPrice = Math.max(position.peakPrice, price)
+      const stopPct = clamp(position.entryVol * STOP_LOSS_VOL_MULT, STOP_LOSS_MIN_PCT, STOP_LOSS_MAX_PCT)
+      const trailArmPct = clamp(position.entryVol * TRAIL_ARM_VOL_MULT, TRAIL_ARM_MIN_PCT, TRAIL_ARM_MAX_PCT)
+      const trailGivebackPct = clamp(
+        position.entryVol * TRAIL_GIVEBACK_VOL_MULT,
+        TRAIL_GIVEBACK_MIN_PCT,
+        TRAIL_GIVEBACK_MAX_PCT,
+      )
+      const moonshotMult = 1 + clamp(position.entryVol * MOONSHOT_VOL_MULT, MOONSHOT_MIN_GAIN, MOONSHOT_MAX_GAIN)
       const shouldClose =
-        price <= position.entryPrice * (1 - STOP_LOSS_PCT) ||
-        price >= position.entryPrice * MOONSHOT_SAFETY_MULT ||
-        (price > position.entryPrice * (1 + TRAIL_ARM_PCT) && price <= position.peakPrice * (1 - TRAIL_GIVEBACK_PCT))
+        price <= position.entryPrice * (1 - stopPct) ||
+        price >= position.entryPrice * moonshotMult ||
+        (price > position.entryPrice * (1 + trailArmPct) && price <= position.peakPrice * (1 - trailGivebackPct))
       if (shouldClose) {
         const exitPrice = price * (1 - slippageFor(position.units * price))
         recordFill((exitPrice - position.entryPrice) * position.units)
@@ -428,7 +482,7 @@ export function runBacktestOnRealCandles(
           const sizeFrac = clamp(0.03 + signal * 0.006, 0.015, 0.12)
           const notional = equity * sizeFrac
           const entryPrice = price * (1 + slippageFor(notional))
-          position = { token: symbol, entryPrice, peakPrice: entryPrice, units: notional / entryPrice, notional }
+          position = { token: symbol, entryPrice, peakPrice: entryPrice, units: notional / entryPrice, notional, entryVol: vol }
           fills += 1
           sessionEntries += 1
         }
