@@ -83,6 +83,8 @@ export interface BacktestResult {
   equityCurve: number[]
   ticketCeilingBlocks: number
   killSwitchBlocks: number
+  source: 'synthetic' | 'real'
+  symbol?: string
 }
 
 export function runBacktest(virtualHours: number): BacktestResult {
@@ -291,5 +293,180 @@ export function runBacktest(virtualHours: number): BacktestResult {
     equityCurve: equitySeries,
     ticketCeilingBlocks,
     killSwitchBlocks,
+    source: 'synthetic',
+  }
+}
+
+// --- REAL DATA mode ---------------------------------------------------
+//
+// Same entry/exit/session-containment rules as runBacktest above, driven by
+// real historical closes (see lib/historicalData.ts, Binance's public
+// klines API) instead of a synthetic random walk. Structurally parallel to
+// runBacktest rather than sharing code with it, same as simulation.ts and
+// runBacktest already are two independent implementations kept in sync only
+// through tuning.ts — safer than threading a live/synthetic-data switch
+// through the tuned-and-validated synthetic path above.
+//
+// Important honesty caveat: only the PRICE series is real. There is no
+// historical feed for SCOUT/SENTIMENT/WHALE-WATCH's actual on-chain/social
+// signals, so those three are approximated here as a shared momentum proxy
+// derived from the real returns themselves (a burst of real upward
+// momentum reads as a positive composite signal). That is a reasonable
+// stand-in, not a replay of what those agents would really have seen — this
+// validates the entry/exit/risk RULES against real price history, not the
+// full agent decision process.
+//
+// There is also only one asset in play per run, so "pick the best ticker"
+// collapses to "the one you picked" — MAX_POSITIONS effectively caps at 1
+// concurrent position instead of spreading across a basket.
+
+const REAL_VOL_WINDOW = 20 // candles of trailing returns used to scale a fresh return into a z-score
+const REAL_VOL_FLOOR = 0.005 // avoids dividing by ~0 during a dead-flat stretch
+
+export function runBacktestOnRealCandles(
+  candles: { time: number; close: number }[],
+  msPerCandle: number,
+  symbol: string,
+): BacktestResult {
+  const closes = candles.map((c) => c.close)
+  const returns: number[] = diffs(closes).map((d, i) => d / closes[i])
+  const ticks = returns.length
+  if (ticks < REAL_VOL_WINDOW + 5) throw new Error('Not enough real candles for a backtest')
+
+  const rollingStd = (i: number) => {
+    const window = returns.slice(Math.max(0, i - REAL_VOL_WINDOW), i)
+    return window.length >= 5 ? stdDev(window) || REAL_VOL_FLOOR : REAL_VOL_FLOOR
+  }
+
+  let marketFactor = 0
+  let scoutVal = 0
+  let sentimentVal = 0
+  let whaleVal = 0
+
+  let equity = SEED_EQUITY
+  let peakEquity = SEED_EQUITY
+  let maxDrawdownPct = 0
+  let wins = 0
+  let losses = 0
+  let fills = 0
+  let bestTradePnl = 0
+  let worstTradePnl = 0
+  let position: BtPosition | null = null
+  const equitySeries: number[] = [equity]
+
+  const ticksPerSession = Math.max(1, Math.round((SESSION_LENGTH_HOURS * 60 * 60_000) / msPerCandle))
+  let sessionStartTick = 0
+  let sessionStartEquity = equity
+  let sessionEntries = 0
+  let ticketCeilingBlocks = 0
+  let killSwitchBlocks = 0
+
+  // Simpler than the synthetic mode's slippageFor: real klines don't carry a
+  // calibrated depth signal (LIQUIDITY agent has no historical analog here),
+  // so this only scales impact with position size, not with a liquidity
+  // reading.
+  const slippageFor = (notional: number) => clamp(0.0012 + notional / LIQUIDITY_DEPTH_USD, 0.0002, 0.08)
+  const effectiveVetoChance = 0.5 * RISK_VETO_CHANCE
+
+  function recordFill(pnl: number) {
+    equity += pnl
+    fills += 1
+    if (pnl > 0) wins += 1
+    else losses += 1
+    bestTradePnl = Math.max(bestTradePnl, pnl)
+    worstTradePnl = Math.min(worstTradePnl, pnl)
+  }
+
+  const sampleEvery = Math.max(1, Math.floor(ticks / 300))
+
+  for (let i = 0; i < ticks; i++) {
+    if (i - sessionStartTick >= ticksPerSession) {
+      sessionStartTick = i
+      sessionStartEquity = equity
+      sessionEntries = 0
+    }
+
+    const z = clamp(returns[i] / rollingStd(i), -5, 5)
+    marketFactor = clamp(marketFactor + z * 0.06 - marketFactor * 0.06, -1, 1)
+    const price = closes[i + 1]
+
+    scoutVal = clamp(scoutVal + AGENT_BETA.scout * marketFactor * 0.8 + z * 0.7 - scoutVal * 0.05, -40, 40)
+    sentimentVal = clamp(sentimentVal + AGENT_BETA.sentiment * marketFactor * 0.8 + z * 0.7 - sentimentVal * 0.05, -40, 40)
+    whaleVal = clamp(whaleVal + AGENT_BETA.whalewatch * marketFactor * 0.8 + z * 0.7 - whaleVal * 0.05, -40, 40)
+
+    // RISK occasionally force-closes the open position.
+    if (position && Math.random() < RISK_FLAG_CHANCE) {
+      const exitPrice = price * (1 - slippageFor(position.units * price))
+      recordFill((exitPrice - position.entryPrice) * position.units)
+      position = null
+    }
+
+    // EXIT: stop-loss / moonshot safety cap / trailing stop.
+    if (position) {
+      position.peakPrice = Math.max(position.peakPrice, price)
+      const shouldClose =
+        price <= position.entryPrice * (1 - STOP_LOSS_PCT) ||
+        price >= position.entryPrice * MOONSHOT_SAFETY_MULT ||
+        (price > position.entryPrice * (1 + TRAIL_ARM_PCT) && price <= position.peakPrice * (1 - TRAIL_GIVEBACK_PCT))
+      if (shouldClose) {
+        const exitPrice = price * (1 - slippageFor(position.units * price))
+        recordFill((exitPrice - position.entryPrice) * position.units)
+        position = null
+      }
+    }
+
+    // SNIPER: same regime gate, signal gate, conviction sizing and risk veto.
+    if (!position && Math.random() < ENTRY_ATTEMPT_CHANCE && marketFactor > ENTRY_REGIME_THRESHOLD) {
+      const killSwitchActive = equity <= sessionStartEquity * (1 - MAX_SESSION_DRAWDOWN_PCT / 100)
+      if (killSwitchActive) {
+        killSwitchBlocks += 1
+      } else if (sessionEntries >= MAX_ENTRIES_PER_SESSION) {
+        ticketCeilingBlocks += 1
+      } else if (Math.random() >= effectiveVetoChance) {
+        const signal = (scoutVal + sentimentVal + whaleVal) / 3
+        if (signal > MIN_SIGNAL_THRESHOLD) {
+          const sizeFrac = clamp(0.03 + signal * 0.006, 0.015, 0.12)
+          const notional = equity * sizeFrac
+          const entryPrice = price * (1 + slippageFor(notional))
+          position = { token: symbol, entryPrice, peakPrice: entryPrice, units: notional / entryPrice, notional }
+          fills += 1
+          sessionEntries += 1
+        }
+      }
+    }
+
+    peakEquity = Math.max(peakEquity, equity)
+    maxDrawdownPct = Math.max(maxDrawdownPct, peakEquity > 0 ? ((peakEquity - equity) / peakEquity) * 100 : 0)
+    if (i % sampleEvery === 0) equitySeries.push(equity)
+  }
+
+  equitySeries.push(equity)
+
+  const totalTrades = wins + losses
+  const totalPnl = equity - SEED_EQUITY
+  const equityReturns = diffs(equitySeries)
+  const sharpe = clamp(mean(equityReturns) / (stdDev(equityReturns) || 1), -3, 3)
+  const virtualHours = (ticks * msPerCandle) / (60 * 60_000)
+
+  return {
+    virtualHours,
+    ticks,
+    startEquity: SEED_EQUITY,
+    endEquity: equity,
+    totalPnl,
+    totalPnlPct: (totalPnl / SEED_EQUITY) * 100,
+    wins,
+    losses,
+    hitRatePct: totalTrades > 0 ? (wins / totalTrades) * 100 : 0,
+    sharpe,
+    maxDrawdownPct,
+    bestTradePnl,
+    worstTradePnl,
+    fills,
+    equityCurve: equitySeries,
+    ticketCeilingBlocks,
+    killSwitchBlocks,
+    source: 'real',
+    symbol,
   }
 }
