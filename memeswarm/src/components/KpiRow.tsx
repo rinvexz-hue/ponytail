@@ -39,7 +39,7 @@ export function KpiRow() {
       </KpiCard>
 
       <KpiCard label="TOTAL P&amp;L">
-        <div className="flex items-baseline gap-2">
+        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
           <AnimatedNumber
             value={kpis.totalPnl}
             format={(v) => formatSigned(v)}
@@ -50,6 +50,9 @@ export function KpiRow() {
             format={(v) => formatPct(v, 1)}
             className={'font-mono text-xs font-semibold ' + (kpis.totalPnl >= 0 ? 'text-profit' : 'text-loss')}
           />
+          {kpis.wins + kpis.losses < 20 && (
+            <span className="font-mono text-[9px] text-amber-soft">n={kpis.wins + kpis.losses}, low sample</span>
+          )}
         </div>
         <Sparkline data={kpis.pnlSeries} color={pnlColor} />
       </KpiCard>
@@ -74,9 +77,6 @@ export function KpiRow() {
         sub={
           <span className="font-mono text-[10px] text-slate-600">
             {kpis.wins}W / {kpis.losses}L · sharpe {kpis.sharpe.toFixed(2)}
-            {kpis.wins + kpis.losses < 20 && (
-              <span className="text-amber-soft"> · n={kpis.wins + kpis.losses}, low sample</span>
-            )}
           </span>
         }
       >
