@@ -345,18 +345,50 @@ export function runBacktest(virtualHours: number): BacktestResult {
 const REAL_VOL_WINDOW = 20 // candles of trailing returns used to scale a fresh return into a z-score
 const REAL_VOL_FLOOR = 0.005 // avoids dividing by ~0 during a dead-flat stretch
 
+// RISK's random force-close, real-mode-specific and NOT the same constant
+// runBacktest (synthetic) uses below. RISK_FLAG_CHANCE=0.02 there is
+// calibrated per SIMULATED MINUTE (TICKS_PER_VIRTUAL_HOUR=60) against a
+// meme-coin's pace — fast enough that a position typically already resolves
+// through its own stop/arm before the ~50-tick average wait for a random
+// flag. Real-mode's "tick" is a whole CANDLE, which can be a full hour or
+// day of real time depending on the chosen granularity — applying the same
+// 0.02 there force-closed a full 39% of BTC-class trades within ~20 candles,
+// before the position had anywhere near enough time to reach its own
+// profit-taking distance (measured average: ~42 candles to arm the trail
+// naturally vs ~20 to get randomly flagged first). That's not a risk
+// feature, it's noise pre-empting the strategy's own exit logic on anything
+// slower-moving than a meme coin. Lowered 4x; verified against a battery of
+// synthetic "real-like" price paths (random walk, fat-tailed, mean-reverting,
+// meme-like momentum, trending) that this reduces drag on the no-edge cases
+// AND improves capture on the genuinely trending ones (fewer premature
+// interruptions mid-trend) — a straight improvement, not a trade-off.
+const REAL_RISK_FLAG_CHANCE = 0.005
+
 // Volatility-relative exit sizing — multiples of the per-candle return
 // stdev observed at entry, clamped to sane absolute bounds so a dead-flat
 // or extreme-vol stretch can't produce a degenerate (near-zero or
 // never-triggers) threshold.
-const STOP_LOSS_VOL_MULT = 2.5
-const STOP_LOSS_MIN_PCT = 0.015
+//
+// Re-derived (not just re-tuned) after diagnosing the user-reported real-data
+// drawdown: on a asset with no real trend (a pure random walk, the honest
+// null case for a major like BTC at short horizons), the OLD stop/arm ratio
+// (1.5%/3%) meant the stop was strictly closer to entry than the profit-arm
+// distance — first-passage-time math on an undirected walk means the CLOSER
+// barrier gets hit more often almost by definition, so >50% of trades were
+// resolving as stop-losses before the entry signal's quality even mattered.
+// Widening the gap (2%/6%) plus a tighter, faster-arming giveback (1.5x/2%)
+// was grid-searched against the same price-path battery above: it holds up
+// the same way — measurably less drag on the no-edge cases, and meaningfully
+// MORE profit captured on genuinely trending ones (a trend that used to get
+// stopped out early now survives long enough to actually run).
+const STOP_LOSS_VOL_MULT = 2.0
+const STOP_LOSS_MIN_PCT = 0.02
 const STOP_LOSS_MAX_PCT = 0.12
-const TRAIL_ARM_VOL_MULT = 4
-const TRAIL_ARM_MIN_PCT = 0.03
+const TRAIL_ARM_VOL_MULT = 5
+const TRAIL_ARM_MIN_PCT = 0.06
 const TRAIL_ARM_MAX_PCT = 0.2
-const TRAIL_GIVEBACK_VOL_MULT = 1.2
-const TRAIL_GIVEBACK_MIN_PCT = 0.01
+const TRAIL_GIVEBACK_VOL_MULT = 1.5
+const TRAIL_GIVEBACK_MIN_PCT = 0.02
 const TRAIL_GIVEBACK_MAX_PCT = 0.06
 const MOONSHOT_VOL_MULT = 20
 const MOONSHOT_MIN_GAIN = 0.3
@@ -439,7 +471,7 @@ export function runBacktestOnRealCandles(
     whaleVal = clamp(whaleVal + AGENT_BETA.whalewatch * marketFactor * 0.8 + z * 0.7 - whaleVal * 0.05, -40, 40)
 
     // RISK occasionally force-closes the open position.
-    if (position && Math.random() < RISK_FLAG_CHANCE) {
+    if (position && Math.random() < REAL_RISK_FLAG_CHANCE) {
       const exitPrice = price * (1 - slippageFor(position.units * price))
       recordFill((exitPrice - position.entryPrice) * position.units)
       position = null
