@@ -235,15 +235,15 @@ export function BacktestPanel() {
               <Stat label="SHARPE" value={result.sharpe.toFixed(2)} />
               <Stat label="MAX DRAWDOWN" value={`${result.maxDrawdownPct.toFixed(1)}%`} />
               <Stat label="BEST / WORST TRADE" value={`${formatSigned(result.bestTradePnl)} / ${formatSigned(result.worstTradePnl)}`} />
-              <Stat label="FILLS" value={result.fills.toLocaleString()} />
-              <Stat label="TICKET CEILING BLOCKS" value={result.ticketCeilingBlocks.toLocaleString()} />
-              <Stat label="KILL-SWITCH BLOCKS" value={result.killSwitchBlocks.toLocaleString()} positive={result.killSwitchBlocks === 0} />
+              <Stat label="FILLS" value={result.fills.toLocaleString('en-US')} />
+              <Stat label="TICKET CEILING BLOCKS" value={result.ticketCeilingBlocks.toLocaleString('en-US')} />
+              <Stat label="KILL-SWITCH BLOCKS" value={result.killSwitchBlocks.toLocaleString('en-US')} positive={result.killSwitchBlocks === 0} />
             </div>
             <div className="mt-3">
               <Sparkline data={result.equityCurve} color={result.totalPnl >= 0 ? '#22c55e' : '#ef4444'} height={40} />
             </div>
             <p className="mt-1 font-mono text-[9px] text-slate-600">
-              {result.ticks.toLocaleString()} decision ticks over {result.virtualHours.toLocaleString()}h simulated
+              {result.ticks.toLocaleString('en-US')} decision ticks over {result.virtualHours.toLocaleString('en-US')}h simulated
             </p>
           </div>
         )}
@@ -255,12 +255,12 @@ export function BacktestPanel() {
               {history.map((h, i) => (
                 <div key={i} className="flex flex-wrap items-center gap-x-4 gap-y-0.5 font-mono text-[10px] text-slate-500">
                   <span className="w-16 text-slate-400">{h.source === 'real' ? h.symbol : 'synth'}</span>
-                  <span className="w-14 text-slate-400">{h.virtualHours.toLocaleString()}h</span>
+                  <span className="w-14 text-slate-400">{h.virtualHours.toLocaleString('en-US')}h</span>
                   <span className={h.totalPnl >= 0 ? 'text-profit' : 'text-loss'}>{formatPct(h.totalPnlPct, 1)}</span>
                   <span>{h.hitRatePct.toFixed(0)}% hit</span>
                   <span>sharpe {h.sharpe.toFixed(2)}</span>
                   <span>dd {h.maxDrawdownPct.toFixed(1)}%</span>
-                  <span>{h.fills.toLocaleString()} fills</span>
+                  <span>{h.fills.toLocaleString('en-US')} fills</span>
                 </div>
               ))}
             </div>

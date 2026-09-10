@@ -362,6 +362,17 @@ const REAL_VOL_FLOOR = 0.005 // avoids dividing by ~0 during a dead-flat stretch
 // meme-like momentum, trending) that this reduces drag on the no-edge cases
 // AND improves capture on the genuinely trending ones (fewer premature
 // interruptions mid-trend) — a straight improvement, not a trade-off.
+//
+// This is a PER-REAL-HOUR rate, not a per-candle one — it's compounded down
+// to whatever msPerCandle actually is inside runBacktestOnRealCandles (see
+// entryChancePerCandle/riskFlagChancePerCandle there). Originally this was
+// applied as a flat per-candle roll, which silently meant "once per hour" at
+// hourly granularity but only "once per DAY" at daily granularity — the
+// resolution AUTO mode actually serves for any 1-year-plus request. That
+// starved daily-candle backtests of ~24x the random-flag rate they should
+// have had, on top of starving entries the same way (see
+// entryChancePerCandle below) — together the main cause of the near-empty,
+// noise-dominated results on "1Y BTC, AUTO" runs.
 const REAL_RISK_FLAG_CHANCE = 0.005
 
 // Volatility-relative exit sizing — multiples of the per-candle return
@@ -457,6 +468,24 @@ export function runBacktestOnRealCandles(
   const equitySeries: number[] = [equity]
 
   const ticksPerSession = Math.max(1, Math.round((SESSION_LENGTH_HOURS * 60 * 60_000) / msPerCandle))
+
+  // ENTRY_ATTEMPT_CHANCE and REAL_RISK_FLAG_CHANCE were both being applied as
+  // flat per-CANDLE probabilities, but they're calibrated per real HOUR (they
+  // matched their intended rate exactly at msPerCandle=3_600_000, which is
+  // what every prior round of tuning here validated against). A 1-year "AUTO"
+  // request resolves to DAILY candles (see historicalData.ts), so the same
+  // flat 0.25/0.005 chance was only rolling once a DAY instead of 24x/day —
+  // collapsing entry attempts (and thus trade count) by ~24x and starving the
+  // backtest down to 1-3 trades for the whole year, which is pure noise, not
+  // signal. Compounding the per-hour rate up to whatever the candle actually
+  // spans keeps the EXPECTED number of attempts per real year roughly
+  // constant across every granularity the user can pick. At exactly hourly
+  // candles this is a no-op (hourFraction=1 → identical to the old flat
+  // value), so nothing about the hourly-validated behavior changes.
+  const hourFraction = msPerCandle / 3_600_000
+  const entryChancePerCandle = 1 - Math.pow(1 - ENTRY_ATTEMPT_CHANCE, hourFraction)
+  const riskFlagChancePerCandle = 1 - Math.pow(1 - REAL_RISK_FLAG_CHANCE, hourFraction)
+
   let sessionStartTick = 0
   let sessionStartEquity = equity
   let sessionEntries = 0
@@ -502,7 +531,7 @@ export function runBacktestOnRealCandles(
     whaleVal = clamp(whaleVal + AGENT_BETA.whalewatch * marketFactor * 0.8 + z * 0.7 - whaleVal * 0.05, -40, 40)
 
     // RISK occasionally force-closes the open position.
-    if (position && Math.random() < REAL_RISK_FLAG_CHANCE) {
+    if (position && Math.random() < riskFlagChancePerCandle) {
       const exitPrice = price * (1 - slippageFor(position.units * price))
       recordFill((exitPrice - position.entryPrice) * position.units)
       position = null
@@ -536,7 +565,7 @@ export function runBacktestOnRealCandles(
     // plus the trend-confirmation gate above (see module comment).
     if (
       !position &&
-      Math.random() < ENTRY_ATTEMPT_CHANCE &&
+      Math.random() < entryChancePerCandle &&
       marketFactor > ENTRY_REGIME_THRESHOLD &&
       trendUpStreak >= TREND_MIN_STREAK
     ) {

@@ -66,7 +66,16 @@ function autoIntervalFor(days: number): { interval: string; msPerCandle: number 
   if (days <= 2) return { interval: '5m', msPerCandle: GRANULARITY_MS['5m'] }
   if (days <= 10) return { interval: '15m', msPerCandle: GRANULARITY_MS['15m'] }
   if (days <= 30) return { interval: '1h', msPerCandle: GRANULARITY_MS['1h'] }
-  if (days <= 200) return { interval: '4h', msPerCandle: GRANULARITY_MS['4h'] }
+  // Was days<=200 → 4h, else 1d. A default "1 year" backtest (365 days) fell
+  // into the 1d bucket, which serves only ~365 candles for the whole year —
+  // too few decision points for the entry/trend gates to fire more than a
+  // handful of times (measured: ~1.9 trades/year, 21% of runs with zero
+  // trades at all — pure noise). 4h candles over the same year is ~2,190
+  // candles (well within MAX_CALLS' budget) and gives the strategy enough
+  // resolution to actually trade (measured: ~17.7 trades/year, 0% zero-trade
+  // runs). Daily is now reserved for multi-year windows, where even at 4h the
+  // candle count would get unwieldy.
+  if (days <= 400) return { interval: '4h', msPerCandle: GRANULARITY_MS['4h'] }
   return { interval: '1d', msPerCandle: GRANULARITY_MS['1d'] }
 }
 
