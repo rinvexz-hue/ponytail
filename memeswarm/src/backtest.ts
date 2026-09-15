@@ -27,6 +27,25 @@ import {
   MAX_SESSION_DRAWDOWN_PCT,
   MIN_SIGNAL_THRESHOLD,
   MOONSHOT_SAFETY_MULT,
+  REAL_ENTRY_ATTEMPT_CHANCE_PER_HOUR,
+  REAL_MOONSHOT_MAX_GAIN,
+  REAL_MOONSHOT_MIN_GAIN,
+  REAL_MOONSHOT_VOL_MULT,
+  REAL_RISK_FLAG_CHANCE_PER_HOUR,
+  REAL_STOP_LOSS_MAX_PCT,
+  REAL_STOP_LOSS_MIN_PCT,
+  REAL_STOP_LOSS_VOL_MULT,
+  REAL_TRAIL_ARM_MAX_PCT,
+  REAL_TRAIL_ARM_MIN_PCT,
+  REAL_TRAIL_ARM_VOL_MULT,
+  REAL_TRAIL_GIVEBACK_MAX_PCT,
+  REAL_TRAIL_GIVEBACK_MIN_PCT,
+  REAL_TRAIL_GIVEBACK_VOL_MULT,
+  REAL_TREND_FAST_WINDOW,
+  REAL_TREND_MIN_STREAK,
+  REAL_TREND_SLOW_WINDOW,
+  REAL_VOL_FLOOR,
+  REAL_VOL_WINDOW,
   RISK_VETO_CHANCE,
   SEED_EQUITY,
   SESSION_LENGTH_HOURS,
@@ -342,87 +361,10 @@ export function runBacktest(virtualHours: number): BacktestResult {
 //    volatility actually observed at entry (an ATR-style stop), so the same
 //    "how many standard deviations of adverse move before this trade is
 //    wrong" logic applies whether the asset picked is BTC or a meme coin.
-const REAL_VOL_WINDOW = 20 // candles of trailing returns used to scale a fresh return into a z-score
-const REAL_VOL_FLOOR = 0.005 // avoids dividing by ~0 during a dead-flat stretch
-
-// RISK's random force-close, real-mode-specific and NOT the same constant
-// runBacktest (synthetic) uses below. RISK_FLAG_CHANCE=0.02 there is
-// calibrated per SIMULATED MINUTE (TICKS_PER_VIRTUAL_HOUR=60) against a
-// meme-coin's pace — fast enough that a position typically already resolves
-// through its own stop/arm before the ~50-tick average wait for a random
-// flag. Real-mode's "tick" is a whole CANDLE, which can be a full hour or
-// day of real time depending on the chosen granularity — applying the same
-// 0.02 there force-closed a full 39% of BTC-class trades within ~20 candles,
-// before the position had anywhere near enough time to reach its own
-// profit-taking distance (measured average: ~42 candles to arm the trail
-// naturally vs ~20 to get randomly flagged first). That's not a risk
-// feature, it's noise pre-empting the strategy's own exit logic on anything
-// slower-moving than a meme coin. Lowered 4x; verified against a battery of
-// synthetic "real-like" price paths (random walk, fat-tailed, mean-reverting,
-// meme-like momentum, trending) that this reduces drag on the no-edge cases
-// AND improves capture on the genuinely trending ones (fewer premature
-// interruptions mid-trend) — a straight improvement, not a trade-off.
-//
-// This is a PER-REAL-HOUR rate, not a per-candle one — it's compounded down
-// to whatever msPerCandle actually is inside runBacktestOnRealCandles (see
-// entryChancePerCandle/riskFlagChancePerCandle there). Originally this was
-// applied as a flat per-candle roll, which silently meant "once per hour" at
-// hourly granularity but only "once per DAY" at daily granularity — the
-// resolution AUTO mode actually serves for any 1-year-plus request. That
-// starved daily-candle backtests of ~24x the random-flag rate they should
-// have had, on top of starving entries the same way (see
-// entryChancePerCandle below) — together the main cause of the near-empty,
-// noise-dominated results on "1Y BTC, AUTO" runs.
-const REAL_RISK_FLAG_CHANCE = 0.005
-
-// Volatility-relative exit sizing — multiples of the per-candle return
-// stdev observed at entry, clamped to sane absolute bounds so a dead-flat
-// or extreme-vol stretch can't produce a degenerate (near-zero or
-// never-triggers) threshold.
-//
-// Re-derived (not just re-tuned) after diagnosing the user-reported real-data
-// drawdown: on a asset with no real trend (a pure random walk, the honest
-// null case for a major like BTC at short horizons), the OLD stop/arm ratio
-// (1.5%/3%) meant the stop was strictly closer to entry than the profit-arm
-// distance — first-passage-time math on an undirected walk means the CLOSER
-// barrier gets hit more often almost by definition, so >50% of trades were
-// resolving as stop-losses before the entry signal's quality even mattered.
-// Widening the gap (2%/6%) plus a tighter, faster-arming giveback (1.5x/2%)
-// was grid-searched against the same price-path battery above: it holds up
-// the same way — measurably less drag on the no-edge cases, and meaningfully
-// MORE profit captured on genuinely trending ones (a trend that used to get
-// stopped out early now survives long enough to actually run).
-const STOP_LOSS_VOL_MULT = 2.0
-const STOP_LOSS_MIN_PCT = 0.02
-const STOP_LOSS_MAX_PCT = 0.12
-const TRAIL_ARM_VOL_MULT = 5
-const TRAIL_ARM_MIN_PCT = 0.06
-const TRAIL_ARM_MAX_PCT = 0.2
-const TRAIL_GIVEBACK_VOL_MULT = 1.5
-const TRAIL_GIVEBACK_MIN_PCT = 0.02
-const TRAIL_GIVEBACK_MAX_PCT = 0.06
-const MOONSHOT_VOL_MULT = 20
-const MOONSHOT_MIN_GAIN = 0.3
-const MOONSHOT_MAX_GAIN = 3.0
-
-// Trend-confirmation entry gate, on top of the marketFactor regime gate
-// above. marketFactor alone reacts to a short burst of same-direction
-// candles; on a genuinely trendless stretch that's still frequent enough by
-// chance to trigger entries that a pure random walk then punishes (measured:
-// ~35% of backtest runs on simulated trendless BTC-like data still came out
-// net negative even after the exit-geometry fix above). Requiring price
-// above a fast moving average, itself above a slower one, for several
-// consecutive candles is a standard trend-following filter that asks a
-// stronger question: not just "did price just tick up" but "is this
-// genuinely trending right now". Grid-searched against a price-path battery
-// that includes a regime-switching generator (alternating trending/choppy
-// stretches, closer to how BTC actually behaves across a year than a pure
-// random walk): this specific window pair cuts the drag on trendless
-// stretches by ~30% while costing under 2% of the upside on genuinely
-// trending/momentum data — not a trade-off, a strict improvement.
-const TREND_FAST_WINDOW = 8
-const TREND_SLOW_WINDOW = 35
-const TREND_MIN_STREAK = 2
+// (Real-asset exit/entry calibration lives in tuning.ts now — REAL_VOL_*,
+// REAL_*_CHANCE_PER_HOUR, REAL_STOP_*/REAL_TRAIL_*/REAL_MOONSHOT_*,
+// REAL_TREND_* — shared with krakenEngine.ts's live paper-trading loop so
+// both drive off the identical, already-validated calibration.)
 
 interface RealPosition extends BtPosition {
   entryVol: number
@@ -483,8 +425,8 @@ export function runBacktestOnRealCandles(
   // candles this is a no-op (hourFraction=1 → identical to the old flat
   // value), so nothing about the hourly-validated behavior changes.
   const hourFraction = msPerCandle / 3_600_000
-  const entryChancePerCandle = 1 - Math.pow(1 - ENTRY_ATTEMPT_CHANCE, hourFraction)
-  const riskFlagChancePerCandle = 1 - Math.pow(1 - REAL_RISK_FLAG_CHANCE, hourFraction)
+  const entryChancePerCandle = 1 - Math.pow(1 - REAL_ENTRY_ATTEMPT_CHANCE_PER_HOUR, hourFraction)
+  const riskFlagChancePerCandle = 1 - Math.pow(1 - REAL_RISK_FLAG_CHANCE_PER_HOUR, hourFraction)
 
   let sessionStartTick = 0
   let sessionStartEquity = equity
@@ -522,8 +464,8 @@ export function runBacktestOnRealCandles(
     marketFactor = clamp(marketFactor + z * 0.03 - marketFactor * 0.06, -1, 1)
     const price = closes[i + 1]
 
-    const fastMa = movingAverage(closes, i, TREND_FAST_WINDOW)
-    const slowMa = movingAverage(closes, i, TREND_SLOW_WINDOW)
+    const fastMa = movingAverage(closes, i, REAL_TREND_FAST_WINDOW)
+    const slowMa = movingAverage(closes, i, REAL_TREND_SLOW_WINDOW)
     trendUpStreak = price > fastMa && fastMa > slowMa ? trendUpStreak + 1 : 0
 
     scoutVal = clamp(scoutVal + AGENT_BETA.scout * marketFactor * 0.8 + z * 0.7 - scoutVal * 0.05, -40, 40)
@@ -542,14 +484,15 @@ export function runBacktestOnRealCandles(
     // module comment above) rather than the synthetic engine's fixed %s.
     if (position) {
       position.peakPrice = Math.max(position.peakPrice, price)
-      const stopPct = clamp(position.entryVol * STOP_LOSS_VOL_MULT, STOP_LOSS_MIN_PCT, STOP_LOSS_MAX_PCT)
-      const trailArmPct = clamp(position.entryVol * TRAIL_ARM_VOL_MULT, TRAIL_ARM_MIN_PCT, TRAIL_ARM_MAX_PCT)
+      const stopPct = clamp(position.entryVol * REAL_STOP_LOSS_VOL_MULT, REAL_STOP_LOSS_MIN_PCT, REAL_STOP_LOSS_MAX_PCT)
+      const trailArmPct = clamp(position.entryVol * REAL_TRAIL_ARM_VOL_MULT, REAL_TRAIL_ARM_MIN_PCT, REAL_TRAIL_ARM_MAX_PCT)
       const trailGivebackPct = clamp(
-        position.entryVol * TRAIL_GIVEBACK_VOL_MULT,
-        TRAIL_GIVEBACK_MIN_PCT,
-        TRAIL_GIVEBACK_MAX_PCT,
+        position.entryVol * REAL_TRAIL_GIVEBACK_VOL_MULT,
+        REAL_TRAIL_GIVEBACK_MIN_PCT,
+        REAL_TRAIL_GIVEBACK_MAX_PCT,
       )
-      const moonshotMult = 1 + clamp(position.entryVol * MOONSHOT_VOL_MULT, MOONSHOT_MIN_GAIN, MOONSHOT_MAX_GAIN)
+      const moonshotMult =
+        1 + clamp(position.entryVol * REAL_MOONSHOT_VOL_MULT, REAL_MOONSHOT_MIN_GAIN, REAL_MOONSHOT_MAX_GAIN)
       const shouldClose =
         price <= position.entryPrice * (1 - stopPct) ||
         price >= position.entryPrice * moonshotMult ||
@@ -567,7 +510,7 @@ export function runBacktestOnRealCandles(
       !position &&
       Math.random() < entryChancePerCandle &&
       marketFactor > ENTRY_REGIME_THRESHOLD &&
-      trendUpStreak >= TREND_MIN_STREAK
+      trendUpStreak >= REAL_TREND_MIN_STREAK
     ) {
       const killSwitchActive = equity <= sessionStartEquity * (1 - MAX_SESSION_DRAWDOWN_PCT / 100)
       if (killSwitchActive) {

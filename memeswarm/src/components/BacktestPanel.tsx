@@ -1,8 +1,10 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { runBacktest, runBacktestOnRealCandles } from '../backtest'
 import type { BacktestResult } from '../backtest'
 import { fetchHistoricalCloses, GRANULARITY_OPTIONS, REAL_DATA_ASSETS } from '../lib/historicalData'
 import type { Granularity } from '../lib/historicalData'
+import { discoverKrakenAssets, fetchKrakenOHLC } from '../lib/krakenData'
+import type { KrakenAsset, KrakenGranularity } from '../lib/krakenData'
 import { Sparkline } from './Sparkline'
 import { formatPct, formatSigned, formatUsd } from '../lib/format'
 
@@ -20,16 +22,39 @@ const DAY_PRESETS = [
   { label: '3Y', days: 365 * 3 },
 ]
 
+const KRAKEN_GRANULARITY_OPTIONS: KrakenGranularity[] = ['5m', '15m', '1h', '4h', '1d']
+
 export function BacktestPanel() {
   const [mode, setMode] = useState<'synthetic' | 'real'>('synthetic')
+  const [source, setSource] = useState<'binance' | 'kraken'>('binance')
   const [hoursInput, setHoursInput] = useState('168')
   const [daysInput, setDaysInput] = useState('365')
   const [symbol, setSymbol] = useState(REAL_DATA_ASSETS[0].pair)
   const [granularity, setGranularity] = useState<Granularity>('auto')
+  const [krakenAssets, setKrakenAssets] = useState<KrakenAsset[] | null>(null)
+  const [krakenSymbol, setKrakenSymbol] = useState<string | null>(null)
+  const [krakenGranularity, setKrakenGranularity] = useState<KrakenGranularity>('4h')
   const [running, setRunning] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<BacktestResult | null>(null)
   const [history, setHistory] = useState<BacktestResult[]>([])
+
+  // Kraken's tradable pair list isn't known until we ask it — several roster
+  // tickers (BRETT, MEW, TURBO, FLOKI, POPCAT) are Solana/Base-native and
+  // simply aren't listed there, so this discovers what actually exists
+  // instead of assuming the Binance roster carries over.
+  useEffect(() => {
+    if (source !== 'kraken' || krakenAssets !== null) return
+    discoverKrakenAssets()
+      .then((assets) => {
+        setKrakenAssets(assets)
+        if (assets.length > 0) setKrakenSymbol((prev) => prev ?? assets[0].label)
+      })
+      .catch((e: unknown) => {
+        setKrakenAssets([])
+        setError(e instanceof Error ? e.message : 'Failed to load Kraken asset list')
+      })
+  }, [source, krakenAssets])
 
   const run = () => {
     if (mode === 'synthetic') {
@@ -52,6 +77,27 @@ export function BacktestPanel() {
     if (!Number.isFinite(days) || days <= 0) return
     setError(null)
     setRunning(true)
+
+    if (source === 'kraken') {
+      const asset = krakenAssets?.find((a) => a.label === krakenSymbol)
+      if (!asset) {
+        setError('No Kraken asset selected')
+        setRunning(false)
+        return
+      }
+      fetchKrakenOHLC(asset.pairKey, krakenGranularity, days)
+        .then(({ candles, msPerCandle }) => {
+          const res = runBacktestOnRealCandles(candles, msPerCandle, asset.label)
+          setResult(res)
+          setHistory((prev) => [res, ...prev].slice(0, 5))
+        })
+        .catch((e: unknown) => {
+          setError(e instanceof Error ? e.message : 'Failed to fetch Kraken historical data')
+        })
+        .finally(() => setRunning(false))
+      return
+    }
+
     const asset = REAL_DATA_ASSETS.find((a) => a.pair === symbol) ?? REAL_DATA_ASSETS[0]
     fetchHistoricalCloses(asset.pair, days, granularity)
       .then(({ candles, msPerCandle }) => {
@@ -143,70 +189,124 @@ export function BacktestPanel() {
             </button>
           </div>
         ) : (
-          <div className="flex flex-wrap items-center gap-2">
-            <select
-              value={symbol}
-              onChange={(e) => setSymbol(e.target.value)}
-              className="rounded-md border border-void-border bg-void-raised px-2 py-1 font-mono text-[11px] text-slate-200 outline-none focus:border-amber/50"
-            >
-              {REAL_DATA_ASSETS.map((a) => (
-                <option key={a.pair} value={a.pair}>
-                  {a.label}
-                </option>
+          <div className="flex flex-col gap-2">
+            <div className="flex gap-1.5">
+              {(['binance', 'kraken'] as const).map((s) => (
+                <button
+                  key={s}
+                  onClick={() => {
+                    setSource(s)
+                    setError(null)
+                  }}
+                  className={
+                    'rounded-md border px-2.5 py-1 font-mono text-[10px] font-bold tracking-wide transition ' +
+                    (source === s
+                      ? 'border-sky-500/50 bg-sky-500/10 text-sky-300'
+                      : 'border-void-border bg-void-raised text-slate-400 hover:border-slate-600')
+                  }
+                >
+                  {s === 'binance' ? 'BINANCE' : 'KRAKEN'}
+                </button>
               ))}
-            </select>
-            {DAY_PRESETS.map((p) => (
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              {source === 'binance' ? (
+                <select
+                  value={symbol}
+                  onChange={(e) => setSymbol(e.target.value)}
+                  className="rounded-md border border-void-border bg-void-raised px-2 py-1 font-mono text-[11px] text-slate-200 outline-none focus:border-amber/50"
+                >
+                  {REAL_DATA_ASSETS.map((a) => (
+                    <option key={a.pair} value={a.pair}>
+                      {a.label}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <select
+                  value={krakenSymbol ?? ''}
+                  onChange={(e) => setKrakenSymbol(e.target.value)}
+                  disabled={!krakenAssets || krakenAssets.length === 0}
+                  className="rounded-md border border-void-border bg-void-raised px-2 py-1 font-mono text-[11px] text-slate-200 outline-none focus:border-amber/50 disabled:opacity-50"
+                >
+                  {krakenAssets === null && <option>loading…</option>}
+                  {krakenAssets?.length === 0 && <option>no pairs found</option>}
+                  {krakenAssets?.map((a) => (
+                    <option key={a.pairKey} value={a.label}>
+                      {a.label}
+                    </option>
+                  ))}
+                </select>
+              )}
+              {DAY_PRESETS.map((p) => (
+                <button
+                  key={p.label}
+                  onClick={() => setDaysInput(String(p.days))}
+                  className={
+                    'rounded-md border px-2.5 py-1 font-mono text-[10px] font-semibold tracking-wide transition ' +
+                    (daysInput === String(p.days)
+                      ? 'border-amber/50 bg-amber/10 text-amber-soft'
+                      : 'border-void-border bg-void-raised text-slate-400 hover:border-slate-600')
+                  }
+                >
+                  {p.label}
+                </button>
+              ))}
+              <div className="flex items-center gap-1.5">
+                <input
+                  type="number"
+                  min={1}
+                  max={1500}
+                  value={daysInput}
+                  onChange={(e) => setDaysInput(e.target.value)}
+                  className="w-20 rounded-md border border-void-border bg-void-raised px-2 py-1 font-mono text-[11px] text-slate-200 outline-none focus:border-amber/50"
+                />
+                <span className="font-mono text-[10px] text-slate-600">days</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="font-mono text-[10px] text-slate-600">candles</span>
+                {source === 'binance' ? (
+                  <select
+                    value={granularity}
+                    onChange={(e) => setGranularity(e.target.value as Granularity)}
+                    className="rounded-md border border-void-border bg-void-raised px-2 py-1 font-mono text-[11px] text-slate-200 outline-none focus:border-amber/50"
+                  >
+                    {GRANULARITY_OPTIONS.map((g) => (
+                      <option key={g} value={g}>
+                        {g === 'auto' ? 'AUTO' : g}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <select
+                    value={krakenGranularity}
+                    onChange={(e) => setKrakenGranularity(e.target.value as KrakenGranularity)}
+                    className="rounded-md border border-void-border bg-void-raised px-2 py-1 font-mono text-[11px] text-slate-200 outline-none focus:border-amber/50"
+                  >
+                    {KRAKEN_GRANULARITY_OPTIONS.map((g) => (
+                      <option key={g} value={g}>
+                        {g}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </div>
               <button
-                key={p.label}
-                onClick={() => setDaysInput(String(p.days))}
-                className={
-                  'rounded-md border px-2.5 py-1 font-mono text-[10px] font-semibold tracking-wide transition ' +
-                  (daysInput === String(p.days)
-                    ? 'border-amber/50 bg-amber/10 text-amber-soft'
-                    : 'border-void-border bg-void-raised text-slate-400 hover:border-slate-600')
-                }
+                onClick={run}
+                disabled={running || (source === 'kraken' && !krakenSymbol)}
+                className="rounded-md border border-amber/40 bg-amber/10 px-3 py-1 font-mono text-[10px] font-bold tracking-wide text-amber-soft transition hover:bg-amber/20 disabled:opacity-50"
               >
-                {p.label}
+                {running ? 'FETCHING…' : 'RUN BACKTEST'}
               </button>
-            ))}
-            <div className="flex items-center gap-1.5">
-              <input
-                type="number"
-                min={1}
-                max={1500}
-                value={daysInput}
-                onChange={(e) => setDaysInput(e.target.value)}
-                className="w-20 rounded-md border border-void-border bg-void-raised px-2 py-1 font-mono text-[11px] text-slate-200 outline-none focus:border-amber/50"
-              />
-              <span className="font-mono text-[10px] text-slate-600">days</span>
             </div>
-            <div className="flex items-center gap-1.5">
-              <span className="font-mono text-[10px] text-slate-600">candles</span>
-              <select
-                value={granularity}
-                onChange={(e) => setGranularity(e.target.value as Granularity)}
-                className="rounded-md border border-void-border bg-void-raised px-2 py-1 font-mono text-[11px] text-slate-200 outline-none focus:border-amber/50"
-              >
-                {GRANULARITY_OPTIONS.map((g) => (
-                  <option key={g} value={g}>
-                    {g === 'auto' ? 'AUTO' : g}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <button
-              onClick={run}
-              disabled={running}
-              className="rounded-md border border-amber/40 bg-amber/10 px-3 py-1 font-mono text-[10px] font-bold tracking-wide text-amber-soft transition hover:bg-amber/20 disabled:opacity-50"
-            >
-              {running ? 'FETCHING…' : 'RUN BACKTEST'}
-            </button>
           </div>
         )}
 
         {error && (
           <p className="mt-2 font-mono text-[10px] text-loss">
-            {error} — Binance may not list this pair, or the request was blocked (network/CORS/rate-limit).
+            {error} — {source === 'kraken' ? 'Kraken' : 'Binance'} may not list this pair, or the request was blocked
+            (network/CORS/rate-limit).
           </p>
         )}
 

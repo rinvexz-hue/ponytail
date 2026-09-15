@@ -63,6 +63,46 @@ export const SESSION_LENGTH_HOURS = 24
 // EXIT/RISK — this only stops the desk from adding to a losing streak.
 export const MAX_SESSION_DRAWDOWN_PCT = 15
 
+// --- Real-asset tuning ---------------------------------------------------
+// Shared by backtest.ts's real-data mode (runBacktestOnRealCandles) AND
+// krakenEngine.ts's live paper-trading loop — both drive off actual market
+// prices for real assets (BTC/ETH/SOL/DOGE-class, not the meme-coin
+// synthetic walk), so they share one calibration instead of each
+// re-deriving it and silently drifting apart. See backtest.ts's module
+// comment for the full derivation history of these values.
+export const REAL_VOL_WINDOW = 20 // trailing samples used to scale a fresh return into a z-score
+export const REAL_VOL_FLOOR = 0.005 // avoids dividing by ~0 during a dead-flat stretch
+
+// Per-REAL-HOUR rates, compounded down to whatever a single "tick" actually
+// spans (a backtest candle, or a live poll interval) — see
+// entryChancePerCandle/riskFlagChancePerCandle in backtest.ts and the
+// equivalent compounding in krakenEngine.ts. At exactly one tick per hour
+// this is a no-op.
+export const REAL_ENTRY_ATTEMPT_CHANCE_PER_HOUR = 0.25
+export const REAL_RISK_FLAG_CHANCE_PER_HOUR = 0.005
+
+// Volatility-relative exit sizing — multiples of the per-tick return stdev
+// observed at entry, clamped to sane absolute bounds.
+export const REAL_STOP_LOSS_VOL_MULT = 2.0
+export const REAL_STOP_LOSS_MIN_PCT = 0.02
+export const REAL_STOP_LOSS_MAX_PCT = 0.12
+export const REAL_TRAIL_ARM_VOL_MULT = 5
+export const REAL_TRAIL_ARM_MIN_PCT = 0.06
+export const REAL_TRAIL_ARM_MAX_PCT = 0.2
+export const REAL_TRAIL_GIVEBACK_VOL_MULT = 1.5
+export const REAL_TRAIL_GIVEBACK_MIN_PCT = 0.02
+export const REAL_TRAIL_GIVEBACK_MAX_PCT = 0.06
+export const REAL_MOONSHOT_VOL_MULT = 20
+export const REAL_MOONSHOT_MIN_GAIN = 0.3
+export const REAL_MOONSHOT_MAX_GAIN = 3.0
+
+// Trend-confirmation entry gate (on top of ENTRY_REGIME_THRESHOLD above):
+// price above a fast moving average, itself above a slower one, for
+// several consecutive ticks.
+export const REAL_TREND_FAST_WINDOW = 8
+export const REAL_TREND_SLOW_WINDOW = 35
+export const REAL_TREND_MIN_STREAK = 2
+
 // How strongly each agent's "value" reading reacts to the shared market
 // factor — used both for the live agent sparklines and (for scout/
 // sentiment/whalewatch/liquidity) the backtester's simplified signal proxy.
