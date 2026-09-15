@@ -1,4 +1,4 @@
-// Shared, framework-agnostic types for the MEMESWARM dashboard.
+// Shared, framework-agnostic types for the PACKHUNT dashboard.
 // simulation.ts depends only on this file — no React/UI imports here,
 // so the mock engine can later be swapped for a real data feed.
 

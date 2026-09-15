@@ -1,8 +1,8 @@
 {
-  "name": "memeswarm",
+  "name": "packhunt",
   "private": true,
   "version": "0.1.0",
-  "description": "MEMESWARM — autonomous multi-agent meme coin trading desk dashboard (simulated).",
+  "description": "PACKHUNT — autonomous multi-agent meme coin trading desk dashboard (simulated).",
   "type": "module",
   "scripts": {
     "dev": "vite",

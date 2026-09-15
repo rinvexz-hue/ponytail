@@ -1,4 +1,4 @@
-// Self-contained sound design for MEMESWARM — every tone is synthesized to a
+// Self-contained sound design for PACKHUNT — every tone is synthesized to a
 // short WAV data URI at module load, so there are no external audio assets
 // to fetch. Howler.js handles playback, throttling keeps rapid ticks from
 // spamming audio, and everything stays muted until the user "arms" it with

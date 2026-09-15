@@ -1,15 +1,15 @@
-// Local-only persistence for MEMESWARM's trading history — saved to this
+// Local-only persistence for PACKHUNT's trading history — saved to this
 // browser's localStorage so equity, positions, and the trade log survive a
 // page reload. Nothing here ever leaves the machine; there is no server, and
 // nothing is shared between browsers or devices.
 
 import type { Candle, LogEntry } from './types'
 
-// Bumped to v2 when the seed equity changed from $50,000 to $5,000 — old
-// saved state from the $50K seed would otherwise load back in and clash
-// with the new "seed $5.0K" label. Bump this again for any future change
-// that would make previously-saved data misleading rather than just stale.
-const STORAGE_KEY = 'memeswarm:v2'
+// Renamed from the memeswarm:v2 key when the app was rebranded to PACKHUNT —
+// old saved state under the previous name is intentionally not migrated.
+// Bump this again for any future change that would make previously-saved
+// data misleading rather than just stale.
+const STORAGE_KEY = 'packhunt:v1'
 
 export interface PersistedPosition {
   id: string

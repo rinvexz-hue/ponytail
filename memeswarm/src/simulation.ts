@@ -1,4 +1,4 @@
-// MEMESWARM simulation engine — the ONLY file that knows this data is fake.
+// PACKHUNT simulation engine — the ONLY file that knows this data is fake.
 //
 // It owns a private mutable state, advances it on a jittered tick loop, and
 // hands the UI layer immutable snapshots via `start(onTick, onEvent)`.

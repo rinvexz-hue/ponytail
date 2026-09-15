@@ -29,10 +29,10 @@ export function Header() {
         <div>
           <div className="flex items-center gap-2">
             <h1 className="font-mono text-lg font-extrabold tracking-widest text-slate-100 sm:text-xl">
-              MEMESWARM
+              PACKHUNT
             </h1>
             <span className="rounded border border-amber/40 bg-amber/10 px-1.5 py-0.5 font-mono text-[10px] font-bold tracking-wider text-amber-soft">
-              SWARM
+              PACK
             </span>
           </div>
           <p className="font-mono text-[11px] tracking-wide text-slate-500">
