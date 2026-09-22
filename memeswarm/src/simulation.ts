@@ -519,29 +519,20 @@ class SwarmEngine {
     this.log = [full, ...this.log].slice(0, LOG_MAX)
   }
 
+  // Flavor-only: every agent logged here (everyone except SNIPER/EXIT, whose
+  // real activity is wired to actual positions below) is narrating, not
+  // trading. TREASURY's 'FILL' action used to also inject a random pnl into
+  // equity and bump fills/volume24h — phantom trades untethered from any
+  // real position, silently violating tickEquity()'s "equity only moves via
+  // closePosition()" invariant and overstating fills/volume24h. Real
+  // fills/wins/losses/equity/volume24h all come from tryOpenPosition() and
+  // closePosition() only, same as SNIPER/EXIT/RISK already do.
   private appendLogEntry(agentId: AgentId) {
     const action = choice(ACTIONS_BY_AGENT[agentId])
     const reason = choice(REASONS_BY_AGENT[agentId])
     const token = choice(this.tickers).symbol
-
-    let pnl: number | null = null
-    if (action === 'FILL' && Math.random() < 0.5) {
-      pnl = randRange(-40, 60)
-    }
-
-    if (pnl !== null) {
-      this.equity += pnl
-      if (pnl > 0) this.emit({ type: 'profit', agentId, pnl })
-      else if (pnl < 0) this.emit({ type: 'loss', agentId, pnl })
-    }
-
-    if (action === 'FILL') {
-      this.fills += 1
-      this.volume24h += this.equity * randRange(0.0008, 0.006)
-    }
-
     this.maybeDriftVenues()
-    this.pushLog({ agentId, action, token, pnl, reason })
+    this.pushLog({ agentId, action, token, pnl: null, reason })
   }
 
   // EXIT's discipline: cut a loser fast (STOP_LOSS_PCT), let a winner run
