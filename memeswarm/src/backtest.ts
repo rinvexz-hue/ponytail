@@ -17,6 +17,7 @@
 // average — see the comments at ENTRY_ATTEMPT_CHANCE and RISK_FLAG_CHANCE.
 
 import { TICKER_SYMBOLS } from './lib/agents'
+import type { RealCandle } from './lib/historicalData'
 import { choice, clamp, diffs, mean, randNormal, randRange, stdDev } from './lib/math'
 import {
   AGENT_BETA,
@@ -563,5 +564,227 @@ export function runBacktestOnRealCandles(
     killSwitchBlocks,
     source: 'real',
     symbol,
+  }
+}
+
+// --- LIVE RULES on a REAL multi-asset basket ----------------------------
+//
+// Tests the EXACT rule set the live meme-coin engine (simulation.ts) and
+// runBacktest's synthetic mode above actually trade with — fixed
+// STOP_LOSS_PCT/TRAIL_ARM_PCT/TRAIL_GIVEBACK_PCT/MOONSHOT_SAFETY_MULT,
+// unbiased entry pick across several real assets at once, no trend-
+// confirmation gate (the live engine doesn't have one either) — against
+// real historical closes instead of a synthetic walk. Deliberately does
+// NOT reuse runBacktestOnRealCandles's ATR-scaled REAL_* thresholds: those
+// validate a DIFFERENT rule set, calibrated for majors like BTC, not the
+// one actually running live. Real-time calibration (entry-attempt/risk-
+// flag chance, session length) still comes from the REAL_*_PER_HOUR
+// constants — those are genuinely about wall-clock timing, not about
+// which asset class the exit-sizing math assumes.
+export interface RealBasketAsset {
+  label: string
+  candles: RealCandle[]
+}
+
+interface BasketPosition {
+  token: string
+  entryPrice: number
+  peakPrice: number
+  units: number
+  notional: number
+}
+
+export function runBacktestOnRealBasket(assets: RealBasketAsset[], msPerCandle: number): BacktestResult {
+  const withEnough = assets.filter((a) => a.candles.length >= REAL_VOL_WINDOW + 5)
+  if (withEnough.length === 0) throw new Error('Not enough real candles for a basket backtest')
+
+  // Some pairs got listed on Binance later than others, so a naive
+  // index-for-index zip would silently compare two different points in
+  // time. Intersecting by timestamp guarantees index i is the same moment
+  // across every asset.
+  let commonTimes: number[] | null = null
+  for (const a of withEnough) {
+    const times = new Set(a.candles.map((c) => c.time))
+    commonTimes = commonTimes === null ? [...times] : commonTimes.filter((t) => times.has(t))
+  }
+  commonTimes = (commonTimes ?? []).sort((a, b) => a - b)
+  if (commonTimes.length < REAL_VOL_WINDOW + 5) {
+    throw new Error('Not enough overlapping real history across the basket')
+  }
+
+  const labels = withEnough.map((a) => a.label)
+  const closesBySymbol: Record<string, number[]> = {}
+  for (const a of withEnough) {
+    const byTime = new Map(a.candles.map((c) => [c.time, c.close]))
+    closesBySymbol[a.label] = commonTimes.map((t) => byTime.get(t) as number)
+  }
+  const returnsBySymbol: Record<string, number[]> = {}
+  for (const label of labels) {
+    returnsBySymbol[label] = diffs(closesBySymbol[label]).map((d, i) => d / closesBySymbol[label][i])
+  }
+
+  const rollingStd = (label: string, i: number) => {
+    const window = returnsBySymbol[label].slice(Math.max(0, i - REAL_VOL_WINDOW), i)
+    return window.length >= 5 ? stdDev(window) || REAL_VOL_FLOOR : REAL_VOL_FLOOR
+  }
+
+  let marketFactor = 0
+  let scoutVal = 0
+  let sentimentVal = 0
+  let whaleVal = 0
+
+  let equity = SEED_EQUITY
+  let peakEquity = SEED_EQUITY
+  let maxDrawdownPct = 0
+  let wins = 0
+  let losses = 0
+  let fills = 0
+  let bestTradePnl = 0
+  let worstTradePnl = 0
+  const positions: BasketPosition[] = []
+  const equitySeries: number[] = [equity]
+
+  const ticks = commonTimes.length - 1
+  const ticksPerSession = Math.max(1, Math.round((SESSION_LENGTH_HOURS * 60 * 60_000) / msPerCandle))
+  let sessionStartTick = 0
+  let sessionStartEquity = equity
+  let sessionEntries = 0
+  let ticketCeilingBlocks = 0
+  let killSwitchBlocks = 0
+
+  const hourFraction = msPerCandle / 3_600_000
+  const entryChancePerCandle = 1 - Math.pow(1 - REAL_ENTRY_ATTEMPT_CHANCE_PER_HOUR, hourFraction)
+  const riskFlagChancePerCandle = 1 - Math.pow(1 - REAL_RISK_FLAG_CHANCE_PER_HOUR, hourFraction)
+  const effectiveVetoChance = 0.5 * RISK_VETO_CHANCE
+
+  const slippageFor = (notional: number) => clamp(0.0012 + notional / LIQUIDITY_DEPTH_USD, 0.0002, 0.08)
+
+  function recordFill(pnl: number) {
+    equity += pnl
+    fills += 1
+    if (pnl > 0) wins += 1
+    else losses += 1
+    bestTradePnl = Math.max(bestTradePnl, pnl)
+    worstTradePnl = Math.min(worstTradePnl, pnl)
+  }
+
+  const sampleEvery = Math.max(1, Math.floor(ticks / 300))
+
+  for (let i = 0; i < ticks; i++) {
+    if (i - sessionStartTick >= ticksPerSession) {
+      sessionStartTick = i
+      sessionStartEquity = equity
+      sessionEntries = 0
+    }
+
+    const priceAt = (label: string) => closesBySymbol[label][i + 1]
+
+    const zScores = labels.map((label) => {
+      const vol = rollingStd(label, i)
+      return clamp(returnsBySymbol[label][i] / vol, -5, 5)
+    })
+    const zAvg = mean(zScores)
+    marketFactor = clamp(marketFactor + zAvg * 0.03 - marketFactor * 0.06, -1, 1)
+    scoutVal = clamp(scoutVal + AGENT_BETA.scout * marketFactor * 0.8 + zAvg * 0.7 - scoutVal * 0.05, -40, 40)
+    sentimentVal = clamp(sentimentVal + AGENT_BETA.sentiment * marketFactor * 0.8 + zAvg * 0.7 - sentimentVal * 0.05, -40, 40)
+    whaleVal = clamp(whaleVal + AGENT_BETA.whalewatch * marketFactor * 0.8 + zAvg * 0.7 - whaleVal * 0.05, -40, 40)
+
+    // RISK: occasionally force-closes the worst open position.
+    if (positions.length > 0 && Math.random() < riskFlagChancePerCandle) {
+      let worstIdx = 0
+      let worstPnl = Infinity
+      positions.forEach((p, idx) => {
+        const price = priceAt(p.token)
+        const pnl = (price - p.entryPrice) * p.units
+        if (pnl < worstPnl) {
+          worstPnl = pnl
+          worstIdx = idx
+        }
+      })
+      const [closed] = positions.splice(worstIdx, 1)
+      const price = priceAt(closed.token)
+      const exitPrice = price * (1 - slippageFor(closed.units * price))
+      recordFill((exitPrice - closed.entryPrice) * closed.units)
+    }
+
+    // EXIT: stop-loss / moonshot cap / trailing stop — the SAME fixed
+    // thresholds the live meme-coin engine actually trades with.
+    for (let idx = positions.length - 1; idx >= 0; idx--) {
+      const p = positions[idx]
+      const price = priceAt(p.token)
+      p.peakPrice = Math.max(p.peakPrice, price)
+      const shouldClose =
+        price <= p.entryPrice * (1 - STOP_LOSS_PCT) ||
+        price >= p.entryPrice * MOONSHOT_SAFETY_MULT ||
+        (price > p.entryPrice * (1 + TRAIL_ARM_PCT) && price <= p.peakPrice * (1 - TRAIL_GIVEBACK_PCT))
+      if (shouldClose) {
+        const exitPrice = price * (1 - slippageFor(p.units * price))
+        recordFill((exitPrice - p.entryPrice) * p.units)
+        positions.splice(idx, 1)
+      }
+    }
+
+    // SNIPER: same regime gate, signal gate, conviction sizing, risk veto
+    // and session containment as the live engine and the synthetic
+    // backtest — an unbiased pick among currently-held-free basket assets,
+    // never the biggest mover (see runBacktest's module comment on why).
+    if (positions.length < MAX_POSITIONS && Math.random() < entryChancePerCandle && marketFactor > ENTRY_REGIME_THRESHOLD) {
+      const killSwitchActive = equity <= sessionStartEquity * (1 - MAX_SESSION_DRAWDOWN_PCT / 100)
+      if (killSwitchActive) {
+        killSwitchBlocks += 1
+      } else if (sessionEntries >= MAX_ENTRIES_PER_SESSION) {
+        ticketCeilingBlocks += 1
+      } else if (Math.random() >= effectiveVetoChance) {
+        const signal = (scoutVal + sentimentVal + whaleVal) / 3
+        if (signal > MIN_SIGNAL_THRESHOLD) {
+          const held = new Set(positions.map((p) => p.token))
+          const candidates = labels.filter((l) => !held.has(l))
+          if (candidates.length > 0) {
+            const label = choice(candidates)
+            const price = priceAt(label)
+            const sizeFrac = clamp(0.03 + signal * 0.006, 0.015, 0.12)
+            const notional = equity * sizeFrac
+            const entryPrice = price * (1 + slippageFor(notional))
+            positions.push({ token: label, entryPrice, peakPrice: entryPrice, units: notional / entryPrice, notional })
+            fills += 1
+            sessionEntries += 1
+          }
+        }
+      }
+    }
+
+    peakEquity = Math.max(peakEquity, equity)
+    maxDrawdownPct = Math.max(maxDrawdownPct, peakEquity > 0 ? ((peakEquity - equity) / peakEquity) * 100 : 0)
+    if (i % sampleEvery === 0) equitySeries.push(equity)
+  }
+
+  equitySeries.push(equity)
+
+  const totalTrades = wins + losses
+  const totalPnl = equity - SEED_EQUITY
+  const equityReturns = diffs(equitySeries)
+  const sharpe = clamp(mean(equityReturns) / (stdDev(equityReturns) || 1), -3, 3)
+  const virtualHours = (ticks * msPerCandle) / (60 * 60_000)
+
+  return {
+    virtualHours,
+    ticks,
+    startEquity: SEED_EQUITY,
+    endEquity: equity,
+    totalPnl,
+    totalPnlPct: (totalPnl / SEED_EQUITY) * 100,
+    wins,
+    losses,
+    hitRatePct: totalTrades > 0 ? (wins / totalTrades) * 100 : 0,
+    sharpe,
+    maxDrawdownPct,
+    bestTradePnl,
+    worstTradePnl,
+    fills,
+    equityCurve: equitySeries,
+    ticketCeilingBlocks,
+    killSwitchBlocks,
+    source: 'real',
+    symbol: labels.join('/'),
   }
 }

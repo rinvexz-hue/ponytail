@@ -1,19 +1,19 @@
 import { useEffect, useState } from 'react'
-import { runBacktest, runBacktestOnRealCandles } from '../backtest'
-import type { BacktestResult } from '../backtest'
+import { runBacktestOnRealBasket, runBacktestOnRealCandles } from '../backtest'
+import type { BacktestResult, RealBasketAsset } from '../backtest'
 import { fetchHistoricalCloses, GRANULARITY_OPTIONS, REAL_DATA_ASSETS } from '../lib/historicalData'
 import type { Granularity } from '../lib/historicalData'
 import { discoverKrakenAssets, fetchKrakenOHLC } from '../lib/krakenData'
 import type { KrakenAsset, KrakenGranularity } from '../lib/krakenData'
+import { TICKER_SYMBOLS } from '../lib/agents'
 import { Sparkline } from './Sparkline'
 import { formatPct, formatSigned, formatUsd } from '../lib/format'
 
-const PRESETS = [
-  { label: '1H', hours: 1 },
-  { label: '24H', hours: 24 },
-  { label: '7D', hours: 24 * 7 },
-  { label: '30D', hours: 24 * 30 },
-]
+// The live meme-coin roster, restricted to whatever Binance actually lists
+// with public history (MEW/BRETT/TURBO aren't listed anywhere with a public
+// historical-candles API — Dexscreener's public API has no history endpoint
+// either, only live snapshots, same as marketData.ts already relies on).
+const BASKET_ASSETS = REAL_DATA_ASSETS.filter((a) => TICKER_SYMBOLS.includes(a.label))
 
 const DAY_PRESETS = [
   { label: '7D', days: 7 },
@@ -25,9 +25,8 @@ const DAY_PRESETS = [
 const KRAKEN_GRANULARITY_OPTIONS: KrakenGranularity[] = ['5m', '15m', '1h', '4h', '1d']
 
 export function BacktestPanel() {
-  const [mode, setMode] = useState<'synthetic' | 'real'>('synthetic')
+  const [mode, setMode] = useState<'basket' | 'real'>('basket')
   const [source, setSource] = useState<'binance' | 'kraken'>('binance')
-  const [hoursInput, setHoursInput] = useState('168')
   const [daysInput, setDaysInput] = useState('365')
   const [symbol, setSymbol] = useState(REAL_DATA_ASSETS[0].pair)
   const [granularity, setGranularity] = useState<Granularity>('auto')
@@ -57,19 +56,30 @@ export function BacktestPanel() {
   }, [source, krakenAssets])
 
   const run = () => {
-    if (mode === 'synthetic') {
-      const hours = Number(hoursInput)
-      if (!Number.isFinite(hours) || hours <= 0) return
+    if (mode === 'basket') {
+      const days = Number(daysInput)
+      if (!Number.isFinite(days) || days <= 0) return
       setError(null)
       setRunning(true)
-      // Let React paint the "RUNNING…" state before the computation (still
-      // synchronous, just fast) runs on the main thread.
-      setTimeout(() => {
-        const res = runBacktest(hours)
-        setResult(res)
-        setHistory((prev) => [res, ...prev].slice(0, 5))
-        setRunning(false)
-      }, 30)
+      Promise.allSettled(BASKET_ASSETS.map((a) => fetchHistoricalCloses(a.pair, days, granularity)))
+        .then((results) => {
+          const assets: RealBasketAsset[] = []
+          let msPerCandle = 0
+          results.forEach((r, i) => {
+            if (r.status === 'fulfilled') {
+              assets.push({ label: BASKET_ASSETS[i].label, candles: r.value.candles })
+              msPerCandle = r.value.msPerCandle
+            }
+          })
+          if (assets.length === 0) throw new Error('No basket assets resolved — Binance may be unreachable')
+          const res = runBacktestOnRealBasket(assets, msPerCandle)
+          setResult(res)
+          setHistory((prev) => [res, ...prev].slice(0, 5))
+        })
+        .catch((e: unknown) => {
+          setError(e instanceof Error ? e.message : 'Failed to fetch basket historical data')
+        })
+        .finally(() => setRunning(false))
       return
     }
 
@@ -116,25 +126,29 @@ export function BacktestPanel() {
       <div className="rounded-lg border border-void-border bg-void-panel p-4 shadow-panel sm:p-6">
         <h2 className="mb-1 font-mono text-xs font-semibold tracking-widest text-slate-400">BACKTEST</h2>
         <p className="mb-3 font-mono text-[10px] leading-snug text-slate-600">
-          {mode === 'synthetic' ? (
+          {mode === 'basket' ? (
             <>
-              Runs the same entry/exit rules against fresh synthetic price action, instantly fast-forwarded to
-              whatever duration you set — fully isolated from your live session, it never touches it. Regenerated
-              from scratch on every run, so results vary — that's the point (Monte Carlo, not one fixed answer).
+              Runs the EXACT live rule set (fixed 5% stop / 10% trail-arm / 2.5x moonshot cap, unbiased entry pick
+              across several assets at once) against real historical closes for the meme coins Binance actually
+              lists ({BASKET_ASSETS.map((a) => a.label).join('/')} — MEW/BRETT/TURBO aren't on Binance, and
+              Dexscreener's public API has no historical-candles endpoint at all, only live snapshots). Only the
+              PRICE series is real; SCOUT/SENTIMENT/WHALE-WATCH are approximated from real price momentum. This is
+              the mode that validates what's actually trading live — ATR RULES below tests a different,
+              volatility-scaled rule set calibrated for majors like BTC.
             </>
           ) : (
             <>
-              Runs the same rules against real historical closes pulled live from Binance's public API (any asset
-              it lists, not just meme coins) — fully isolated from your live session. Only the PRICE series is
-              real: there's no historical feed for SCOUT/SENTIMENT/WHALE-WATCH's actual signals, so those are
-              approximated from the real price momentum itself. Treat this as validating the entry/exit/risk
-              rules against real history, not a replay of the full agent logic.
+              Runs a volatility-scaled (ATR-style) rule set — sized off each asset's own observed volatility rather
+              than a fixed %, calibrated for majors — against real historical closes pulled live from Binance's or
+              Kraken's public API, one asset at a time. Only the PRICE series is real; SCOUT/SENTIMENT/WHALE-WATCH
+              are approximated from real price momentum. This is NOT the rule set the live meme-coin dashboard
+              trades with — see LIVE RULES above for that.
             </>
           )}
         </p>
 
         <div className="mb-3 flex gap-1.5">
-          {(['synthetic', 'real'] as const).map((m) => (
+          {(['basket', 'real'] as const).map((m) => (
             <button
               key={m}
               onClick={() => {
@@ -148,20 +162,20 @@ export function BacktestPanel() {
                   : 'border-void-border bg-void-raised text-slate-400 hover:border-slate-600')
               }
             >
-              {m === 'synthetic' ? 'SYNTHETIC' : 'REAL DATA'}
+              {m === 'basket' ? 'LIVE RULES · REAL' : 'ATR RULES · REAL'}
             </button>
           ))}
         </div>
 
-        {mode === 'synthetic' ? (
+        {mode === 'basket' ? (
           <div className="flex flex-wrap items-center gap-2">
-            {PRESETS.map((p) => (
+            {DAY_PRESETS.map((p) => (
               <button
                 key={p.label}
-                onClick={() => setHoursInput(String(p.hours))}
+                onClick={() => setDaysInput(String(p.days))}
                 className={
                   'rounded-md border px-2.5 py-1 font-mono text-[10px] font-semibold tracking-wide transition ' +
-                  (hoursInput === String(p.hours)
+                  (daysInput === String(p.days)
                     ? 'border-amber/50 bg-amber/10 text-amber-soft'
                     : 'border-void-border bg-void-raised text-slate-400 hover:border-slate-600')
                 }
@@ -173,19 +187,33 @@ export function BacktestPanel() {
               <input
                 type="number"
                 min={1}
-                max={8760}
-                value={hoursInput}
-                onChange={(e) => setHoursInput(e.target.value)}
+                max={1500}
+                value={daysInput}
+                onChange={(e) => setDaysInput(e.target.value)}
                 className="w-20 rounded-md border border-void-border bg-void-raised px-2 py-1 font-mono text-[11px] text-slate-200 outline-none focus:border-amber/50"
               />
-              <span className="font-mono text-[10px] text-slate-600">hours</span>
+              <span className="font-mono text-[10px] text-slate-600">days</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="font-mono text-[10px] text-slate-600">candles</span>
+              <select
+                value={granularity}
+                onChange={(e) => setGranularity(e.target.value as Granularity)}
+                className="rounded-md border border-void-border bg-void-raised px-2 py-1 font-mono text-[11px] text-slate-200 outline-none focus:border-amber/50"
+              >
+                {GRANULARITY_OPTIONS.map((g) => (
+                  <option key={g} value={g}>
+                    {g === 'auto' ? 'AUTO' : g}
+                  </option>
+                ))}
+              </select>
             </div>
             <button
               onClick={run}
               disabled={running}
               className="rounded-md border border-amber/40 bg-amber/10 px-3 py-1 font-mono text-[10px] font-bold tracking-wide text-amber-soft transition hover:bg-amber/20 disabled:opacity-50"
             >
-              {running ? 'RUNNING…' : 'RUN BACKTEST'}
+              {running ? 'FETCHING…' : 'RUN BACKTEST'}
             </button>
           </div>
         ) : (
@@ -354,7 +382,9 @@ export function BacktestPanel() {
             <div className="space-y-1">
               {history.map((h, i) => (
                 <div key={i} className="flex flex-wrap items-center gap-x-4 gap-y-0.5 font-mono text-[10px] text-slate-500">
-                  <span className="w-16 text-slate-400">{h.source === 'real' ? h.symbol : 'synth'}</span>
+                  <span className="w-16 truncate text-slate-400" title={h.source === 'real' ? h.symbol : undefined}>
+                    {h.source === 'real' ? h.symbol : 'synth'}
+                  </span>
                   <span className="w-14 text-slate-400">{h.virtualHours.toLocaleString('en-US')}h</span>
                   <span className={h.totalPnl >= 0 ? 'text-profit' : 'text-loss'}>{formatPct(h.totalPnlPct, 1)}</span>
                   <span>{h.hitRatePct.toFixed(0)}% hit</span>
