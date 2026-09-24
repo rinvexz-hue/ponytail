@@ -74,7 +74,7 @@ function MarketStatusPill({ status, detail }: { status: MarketStatus; detail?: s
   return (
     <div
       className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1 ${meta.bg} ${meta.border}`}
-      title={detail ?? 'Real, read-only prices from Dexscreener — no wallet, no execution.'}
+      title={detail ?? 'Real, read-only prices from Kraken — no wallet, no execution.'}
     >
       <span
         className={`h-1.5 w-1.5 rounded-full ${meta.color} ${status === 'live' ? 'animate-pulseDot' : ''}`}

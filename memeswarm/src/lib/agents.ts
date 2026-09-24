@@ -15,7 +15,7 @@ export const AGENT_META: Record<AgentId, AgentMeta> = {
   scout: {
     id: 'scout',
     name: 'SCOUT',
-    role: 'Launch Scanner',
+    role: 'Market Scanner',
     color: '#38bdf8',
     glow: 'rgba(56,189,248,0.45)',
   },
@@ -29,14 +29,14 @@ export const AGENT_META: Record<AgentId, AgentMeta> = {
   sentiment: {
     id: 'sentiment',
     name: 'SENTIMENT',
-    role: 'Hype Scanner',
+    role: 'Momentum Scanner',
     color: '#a855f7',
     glow: 'rgba(168,85,247,0.45)',
   },
   whalewatch: {
     id: 'whalewatch',
     name: 'WHALE-WATCH',
-    role: 'On-Chain Tracker',
+    role: 'Order Flow Tracker',
     color: '#06b6d4',
     glow: 'rgba(6,182,212,0.45)',
   },
@@ -50,7 +50,7 @@ export const AGENT_META: Record<AgentId, AgentMeta> = {
   risk: {
     id: 'risk',
     name: 'RISK',
-    role: 'Rug Detection',
+    role: 'Volatility Guard',
     color: '#ef4444',
     glow: 'rgba(239,68,68,0.45)',
   },
@@ -73,14 +73,12 @@ export const AGENT_META: Record<AgentId, AgentMeta> = {
 // One-sentence explanations shown on hover in SWARM CORE — what each agent
 // actually does, separate from the others, in plain language.
 export const AGENT_DESCRIPTIONS: Record<AgentId, string> = {
-  scout: 'Scans for freshly launched tokens and new liquidity pools the moment they appear on-chain.',
+  scout: "Scans Kraken's full listings for fresh volume, tightening spreads, and new trading opportunities.",
   sniper: 'Fires the entry trade once SCOUT, SENTIMENT and WHALE-WATCH agree the setup is worth it.',
-  sentiment: 'Tracks social buzz and hype spikes for each token across crypto social media.',
-  whalewatch: 'Watches large wallets for accumulation or exit patterns that hint at where price is headed.',
-  liquidity: 'Monitors pool depth and sizes trades to avoid excessive slippage on thin books.',
-  risk: 'Screens contracts for rug-pull red flags and can veto an entry or force-close a position.',
-  exit: 'Runs the stop-loss and trailing-stop discipline that decides when a position closes.',
-  treasury: 'Settles fills, rebalances funds across venues, and sweeps profit.',
+  sentiment: 'Tracks the shared market regime and momentum across the whole tracked roster.',
+  whalewatch: 'Watches order-book flow for accumulation or exit patterns that hint at where price is headed.',
+  liquidity: 'Monitors order-book depth and sizes trades to avoid excessive slippage on thin books.',
+  risk: "Flags abnormal volatility and can veto an entry or force-close a position.",
+  exit: 'Runs the stop-loss and trailing-stop discipline — sized to each asset\'s own volatility — that decides when a position closes.',
+  treasury: 'Settles fills, reconciles balances, and sweeps profit.',
 }
-
-export const TICKER_SYMBOLS = ['PEPE', 'WIF', 'BONK', 'FLOKI', 'POPCAT', 'MEW', 'BRETT', 'TURBO']

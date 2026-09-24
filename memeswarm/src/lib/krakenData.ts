@@ -22,7 +22,7 @@ async function krakenGet<T>(path: string, params?: Record<string, string>): Prom
   return data.result
 }
 
-interface KrakenAssetPairInfo {
+export interface KrakenAssetPairInfo {
   altname: string
   wsname?: string
   base: string
@@ -35,42 +35,26 @@ export interface KrakenAsset {
   altname: string
 }
 
-// Candidate base-asset codes per display symbol. Kraken renames some assets
-// internally (XBT for Bitcoin, XDG for Dogecoin) and this has shifted across
-// API versions, so trying several candidates against the live AssetPairs
-// response is more robust than hardcoding one guess that might be stale.
-const SYMBOL_CANDIDATES: Record<string, string[]> = {
-  BTC: ['XBT', 'BTC'],
-  ETH: ['ETH'],
-  SOL: ['SOL'],
-  DOGE: ['DOGE', 'XDG'],
-  PEPE: ['PEPE'],
-  WIF: ['WIF'],
-  BONK: ['BONK'],
-  SHIB: ['SHIB'],
+// Kraken's own base-asset codes are frequently not the display symbol
+// (XXBT for Bitcoin, XETH for Ethereum, etc. — a legacy X/Z exchange-asset
+// prefix). `wsname` ("XBT/USD") is Kraken's own already-clean display name
+// and is preferred here; a regex strip on `base` is only a fallback for the
+// rare pair missing wsname, since blindly stripping a leading X/Z risks
+// mangling a genuinely X/Z-first modern ticker that isn't legacy-prefixed.
+function displaySymbol(info: KrakenAssetPairInfo): string {
+  const fromWsname = info.wsname?.split('/')[0]
+  const raw = fromWsname || info.base.replace(/^[XZ](?=[A-Z0-9]{3,4}$)/, '')
+  return raw === 'XBT' ? 'BTC' : raw
 }
 
 let cachedAssets: Promise<KrakenAsset[]> | null = null
 
-function findPairKey(entries: [string, KrakenAssetPairInfo][], candidates: string[]): [string, KrakenAssetPairInfo] | null {
-  for (const c of candidates) {
-    const exact = entries.find(([, info]) => info.altname === `${c}USD`)
-    if (exact) return exact
-  }
-  for (const c of candidates) {
-    const fuzzy = entries.find(([, info]) => info.altname?.startsWith(c) && /USDT?$/.test(info.altname))
-    if (fuzzy) return fuzzy
-  }
-  return null
-}
-
-// Discovers which of our tracked symbols Kraken actually lists against USD
-// (or USDT), and what Kraken's own canonical key is for each — cached for
+// Discovers EVERY pair Kraken lists against USD (preferred) or USDT — the
+// entire tradable universe on the exchange, not a curated allow-list. One
+// base asset can have several quote currencies listed (BTC/USD, BTC/EUR,
+// BTC/GBP, ...); this keeps exactly one pair per base, preferring the USD
+// market so every position is priced in the same base currency. Cached for
 // the session since the tradable pair list doesn't change minute to minute.
-// Not every symbol in our roster will resolve: several (BRETT, MEW, TURBO,
-// FLOKI, POPCAT) are Solana/Base-native meme coins that trade on-chain, not
-// on Kraken — callers must only show/trade whatever comes back here, never
-// assume the full roster is available.
 export async function discoverKrakenAssets(): Promise<KrakenAsset[]> {
   if (!cachedAssets) {
     cachedAssets = fetchAssetPairsAndResolve()
@@ -78,37 +62,81 @@ export async function discoverKrakenAssets(): Promise<KrakenAsset[]> {
   return cachedAssets
 }
 
-async function fetchAssetPairsAndResolve(): Promise<KrakenAsset[]> {
-  const pairs = await krakenGet<Record<string, KrakenAssetPairInfo>>('AssetPairs')
-  const entries = Object.entries(pairs)
-  const found: KrakenAsset[] = []
-  for (const [label, candidates] of Object.entries(SYMBOL_CANDIDATES)) {
-    const match = findPairKey(entries, candidates)
-    if (match) found.push({ label, pairKey: match[0], altname: match[1].altname })
+// Pure and exported (no network) so its dedup/preference logic can be
+// exercised by a runnable check without hitting the real API — see
+// scripts/check-kraken-discovery.ts.
+export function resolveTradableAssets(pairs: Record<string, KrakenAssetPairInfo>): KrakenAsset[] {
+  const byBase = new Map<string, { pairKey: string; info: KrakenAssetPairInfo; quotedInUsd: boolean }>()
+
+  for (const [pairKey, info] of Object.entries(pairs)) {
+    const altname = info.altname ?? ''
+    const quotedInUsd = /USD$/.test(altname)
+    const quotedInUsdt = /USDT$/.test(altname)
+    if (!quotedInUsd && !quotedInUsdt) continue // only USD/USDT-quoted spot markets — keeps every position priced in one stable currency
+
+    const base = displaySymbol(info)
+    if (!base) continue
+
+    const existing = byBase.get(base)
+    // Prefer the direct USD market over USDT when a base asset lists both.
+    if (!existing || (quotedInUsd && !existing.quotedInUsd)) {
+      byBase.set(base, { pairKey, info, quotedInUsd })
+    }
   }
-  return found
+
+  return [...byBase.entries()]
+    .map(([label, { pairKey, info }]) => ({ label, pairKey, altname: info.altname }))
+    .sort((a, b) => a.label.localeCompare(b.label))
+}
+
+function fetchAssetPairsAndResolve(): Promise<KrakenAsset[]> {
+  return krakenGet<Record<string, KrakenAssetPairInfo>>('AssetPairs').then(resolveTradableAssets)
 }
 
 export interface KrakenTick {
   symbol: string
   price: number
+  changePct: number // today's change vs. Kraken's own session-opening price
   updatedAt: number
 }
 
-// Fetches all assets in one call (Kraken's Ticker endpoint accepts a
-// comma-separated pair list and this counts as a single request against the
-// public rate limit, regardless of how many pairs are in it).
+// ponytail: Kraken's public rate limit for an unauthenticated client is a
+// modest counter budget (documented around 15-20 call "credits", refilling
+// over time), and a single Ticker call's URL grows with the pair list, so
+// the full discovered roster (can be 250-400+ pairs) is polled in chunks
+// instead of one enormous request. Ceiling: at ~100 pairs/call this is a
+// handful of calls per poll — fine within budget at a 20s interval, but a
+// roster growing much larger (or a shorter poll interval) would need a
+// smaller chunk size or a longer interval to stay under Kraken's limit.
+const TICKER_CHUNK_SIZE = 100
+
 export async function fetchKrakenTicker(assets: KrakenAsset[]): Promise<Record<string, KrakenTick>> {
   if (assets.length === 0) return {}
-  const pairParam = assets.map((a) => a.pairKey).join(',')
-  const result = await krakenGet<Record<string, { c: [string, string] }>>('Ticker', { pair: pairParam })
   const now = Date.now()
   const out: Record<string, KrakenTick> = {}
-  for (const a of assets) {
-    const row = result[a.pairKey]
-    const price = Number(row?.c?.[0])
-    if (!Number.isFinite(price) || price <= 0) continue
-    out[a.label] = { symbol: a.label, price, updatedAt: now }
+
+  const chunks: KrakenAsset[][] = []
+  for (let i = 0; i < assets.length; i += TICKER_CHUNK_SIZE) chunks.push(assets.slice(i, i + TICKER_CHUNK_SIZE))
+
+  const results = await Promise.allSettled(
+    chunks.map((chunk) =>
+      krakenGet<Record<string, { c: [string, string]; o: string }>>('Ticker', {
+        pair: chunk.map((a) => a.pairKey).join(','),
+      }).then((result) => ({ chunk, result })),
+    ),
+  )
+
+  for (const settled of results) {
+    if (settled.status !== 'fulfilled') continue
+    const { chunk, result } = settled.value
+    for (const a of chunk) {
+      const row = result[a.pairKey]
+      const price = Number(row?.c?.[0])
+      const openPrice = Number(row?.o)
+      if (!Number.isFinite(price) || price <= 0) continue
+      const changePct = Number.isFinite(openPrice) && openPrice > 0 ? ((price - openPrice) / openPrice) * 100 : 0
+      out[a.label] = { symbol: a.label, price, changePct, updatedAt: now }
+    }
   }
   return out
 }

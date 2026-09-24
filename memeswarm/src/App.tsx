@@ -7,7 +7,6 @@ import { TradingPanel } from './components/TradingPanel'
 import { SwarmCore } from './components/SwarmCore'
 import { AlignmentBar } from './components/AlignmentBar'
 import { BacktestPanel } from './components/BacktestPanel'
-import { KrakenPanel } from './components/KrakenPanel'
 
 export default function App() {
   return (
@@ -21,7 +20,6 @@ export default function App() {
         <SwarmCore />
         <AlignmentBar />
         <BacktestPanel />
-        <KrakenPanel />
       </main>
     </div>
   )

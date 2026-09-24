@@ -5,15 +5,8 @@ import { fetchHistoricalCloses, GRANULARITY_OPTIONS, REAL_DATA_ASSETS } from '..
 import type { Granularity } from '../lib/historicalData'
 import { discoverKrakenAssets, fetchKrakenOHLC } from '../lib/krakenData'
 import type { KrakenAsset, KrakenGranularity } from '../lib/krakenData'
-import { TICKER_SYMBOLS } from '../lib/agents'
 import { Sparkline } from './Sparkline'
 import { formatPct, formatSigned, formatUsd } from '../lib/format'
-
-// The live meme-coin roster, restricted to whatever Binance actually lists
-// with public history (MEW/BRETT/TURBO aren't listed anywhere with a public
-// historical-candles API — Dexscreener's public API has no history endpoint
-// either, only live snapshots, same as marketData.ts already relies on).
-const BASKET_ASSETS = REAL_DATA_ASSETS.filter((a) => TICKER_SYMBOLS.includes(a.label))
 
 const DAY_PRESETS = [
   { label: '7D', days: 7 },
@@ -24,26 +17,37 @@ const DAY_PRESETS = [
 
 const KRAKEN_GRANULARITY_OPTIONS: KrakenGranularity[] = ['5m', '15m', '1h', '4h', '1d']
 
+// ponytail: each basket asset needs its OWN paginated OHLC fetch (unlike the
+// live ticker, Kraken's OHLC endpoint takes one pair per call) — an
+// unbounded basket size would mean dozens of HTTP round trips per backtest
+// run. This caps it well under Kraken's public rate-limit budget. Upgrade
+// path: rank the discovered roster by real 24h volume (would need
+// fetchKrakenTicker to also return volume) and default to the most liquid
+// N instead of the current alphabetical-first-N.
+const MAX_BASKET_ASSETS = 15
+const DEFAULT_BASKET_ASSETS = 10
+
 export function BacktestPanel() {
-  const [mode, setMode] = useState<'basket' | 'real'>('basket')
-  const [source, setSource] = useState<'binance' | 'kraken'>('binance')
+  const [mode, setMode] = useState<'basket' | 'single'>('basket')
+  const [source, setSource] = useState<'kraken' | 'binance'>('kraken')
   const [daysInput, setDaysInput] = useState('365')
   const [symbol, setSymbol] = useState(REAL_DATA_ASSETS[0].pair)
   const [granularity, setGranularity] = useState<Granularity>('auto')
   const [krakenAssets, setKrakenAssets] = useState<KrakenAsset[] | null>(null)
+  const [krakenAssetsError, setKrakenAssetsError] = useState<string | null>(null)
   const [krakenSymbol, setKrakenSymbol] = useState<string | null>(null)
   const [krakenGranularity, setKrakenGranularity] = useState<KrakenGranularity>('4h')
+  const [basketCount, setBasketCount] = useState(DEFAULT_BASKET_ASSETS)
   const [running, setRunning] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<BacktestResult | null>(null)
   const [history, setHistory] = useState<BacktestResult[]>([])
 
-  // Kraken's tradable pair list isn't known until we ask it — several roster
-  // tickers (BRETT, MEW, TURBO, FLOKI, POPCAT) are Solana/Base-native and
-  // simply aren't listed there, so this discovers what actually exists
-  // instead of assuming the Binance roster carries over.
+  // Kraken's tradable roster isn't known until we ask it — discovered once,
+  // shared by both BASKET mode (takes the first N) and SINGLE mode's Kraken
+  // source dropdown.
   useEffect(() => {
-    if (source !== 'kraken' || krakenAssets !== null) return
+    if (krakenAssets !== null) return
     discoverKrakenAssets()
       .then((assets) => {
         setKrakenAssets(assets)
@@ -51,27 +55,32 @@ export function BacktestPanel() {
       })
       .catch((e: unknown) => {
         setKrakenAssets([])
-        setError(e instanceof Error ? e.message : 'Failed to load Kraken asset list')
+        setKrakenAssetsError(e instanceof Error ? e.message : 'Failed to load the Kraken asset list')
       })
-  }, [source, krakenAssets])
+  }, [krakenAssets])
 
   const run = () => {
     if (mode === 'basket') {
       const days = Number(daysInput)
       if (!Number.isFinite(days) || days <= 0) return
+      if (!krakenAssets || krakenAssets.length === 0) {
+        setError(krakenAssetsError ?? 'Kraken asset list not loaded yet')
+        return
+      }
+      const basket = krakenAssets.slice(0, basketCount)
       setError(null)
       setRunning(true)
-      Promise.allSettled(BASKET_ASSETS.map((a) => fetchHistoricalCloses(a.pair, days, granularity)))
+      Promise.allSettled(basket.map((a) => fetchKrakenOHLC(a.pairKey, krakenGranularity, days)))
         .then((results) => {
           const assets: RealBasketAsset[] = []
           let msPerCandle = 0
           results.forEach((r, i) => {
             if (r.status === 'fulfilled') {
-              assets.push({ label: BASKET_ASSETS[i].label, candles: r.value.candles })
+              assets.push({ label: basket[i].label, candles: r.value.candles })
               msPerCandle = r.value.msPerCandle
             }
           })
-          if (assets.length === 0) throw new Error('No basket assets resolved — Binance may be unreachable')
+          if (assets.length === 0) throw new Error('No basket assets resolved — Kraken may be unreachable')
           const res = runBacktestOnRealBasket(assets, msPerCandle)
           setResult(res)
           setHistory((prev) => [res, ...prev].slice(0, 5))
@@ -128,27 +137,23 @@ export function BacktestPanel() {
         <p className="mb-3 font-mono text-[10px] leading-snug text-slate-600">
           {mode === 'basket' ? (
             <>
-              Runs the EXACT live rule set (fixed 5% stop / 10% trail-arm / 2.5x moonshot cap, unbiased entry pick
-              across several assets at once) against real historical closes for the meme coins Binance actually
-              lists ({BASKET_ASSETS.map((a) => a.label).join('/')} — MEW/BRETT/TURBO aren't on Binance, and
-              Dexscreener's public API has no historical-candles endpoint at all, only live snapshots). Only the
-              PRICE series is real; SCOUT/SENTIMENT/WHALE-WATCH are approximated from real price momentum. This is
-              the mode that validates what's actually trading live — ATR RULES below tests a different,
-              volatility-scaled rule set calibrated for majors like BTC.
+              Runs the EXACT live rule set (ATR-scaled stop/trail/take-profit, trend-confirmed entry pick across
+              several assets at once) against real historical Kraken closes for {basketCount} of Kraken's{' '}
+              {krakenAssets ? krakenAssets.length.toLocaleString() : '…'} discovered USD/USDT pairs. Only the PRICE
+              series is real; SCOUT/SENTIMENT/WHALE-WATCH are approximated from real price momentum. This is the
+              mode that validates what's actually trading live.
             </>
           ) : (
             <>
-              Runs a volatility-scaled (ATR-style) rule set — sized off each asset's own observed volatility rather
-              than a fixed %, calibrated for majors — against real historical closes pulled live from Binance's or
-              Kraken's public API, one asset at a time. Only the PRICE series is real; SCOUT/SENTIMENT/WHALE-WATCH
-              are approximated from real price momentum. This is NOT the rule set the live meme-coin dashboard
-              trades with — see LIVE RULES above for that.
+              The same ATR-scaled rule set, one asset at a time, against real historical closes pulled live from
+              Kraken's or Binance's public API. Only the PRICE series is real; SCOUT/SENTIMENT/WHALE-WATCH are
+              approximated from real price momentum.
             </>
           )}
         </p>
 
         <div className="mb-3 flex gap-1.5">
-          {(['basket', 'real'] as const).map((m) => (
+          {(['basket', 'single'] as const).map((m) => (
             <button
               key={m}
               onClick={() => {
@@ -162,13 +167,24 @@ export function BacktestPanel() {
                   : 'border-void-border bg-void-raised text-slate-400 hover:border-slate-600')
               }
             >
-              {m === 'basket' ? 'LIVE RULES · REAL' : 'ATR RULES · REAL'}
+              {m === 'basket' ? 'BASKET · KRAKEN' : 'SINGLE ASSET'}
             </button>
           ))}
         </div>
 
         {mode === 'basket' ? (
           <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-1.5">
+              <input
+                type="number"
+                min={2}
+                max={MAX_BASKET_ASSETS}
+                value={basketCount}
+                onChange={(e) => setBasketCount(clampBasketCount(Number(e.target.value)))}
+                className="w-16 rounded-md border border-void-border bg-void-raised px-2 py-1 font-mono text-[11px] text-slate-200 outline-none focus:border-amber/50"
+              />
+              <span className="font-mono text-[10px] text-slate-600">assets (max {MAX_BASKET_ASSETS})</span>
+            </div>
             {DAY_PRESETS.map((p) => (
               <button
                 key={p.label}
@@ -197,20 +213,20 @@ export function BacktestPanel() {
             <div className="flex items-center gap-1.5">
               <span className="font-mono text-[10px] text-slate-600">candles</span>
               <select
-                value={granularity}
-                onChange={(e) => setGranularity(e.target.value as Granularity)}
+                value={krakenGranularity}
+                onChange={(e) => setKrakenGranularity(e.target.value as KrakenGranularity)}
                 className="rounded-md border border-void-border bg-void-raised px-2 py-1 font-mono text-[11px] text-slate-200 outline-none focus:border-amber/50"
               >
-                {GRANULARITY_OPTIONS.map((g) => (
+                {KRAKEN_GRANULARITY_OPTIONS.map((g) => (
                   <option key={g} value={g}>
-                    {g === 'auto' ? 'AUTO' : g}
+                    {g}
                   </option>
                 ))}
               </select>
             </div>
             <button
               onClick={run}
-              disabled={running}
+              disabled={running || !krakenAssets || krakenAssets.length === 0}
               className="rounded-md border border-amber/40 bg-amber/10 px-3 py-1 font-mono text-[10px] font-bold tracking-wide text-amber-soft transition hover:bg-amber/20 disabled:opacity-50"
             >
               {running ? 'FETCHING…' : 'RUN BACKTEST'}
@@ -219,7 +235,7 @@ export function BacktestPanel() {
         ) : (
           <div className="flex flex-col gap-2">
             <div className="flex gap-1.5">
-              {(['binance', 'kraken'] as const).map((s) => (
+              {(['kraken', 'binance'] as const).map((s) => (
                 <button
                   key={s}
                   onClick={() => {
@@ -233,25 +249,13 @@ export function BacktestPanel() {
                       : 'border-void-border bg-void-raised text-slate-400 hover:border-slate-600')
                   }
                 >
-                  {s === 'binance' ? 'BINANCE' : 'KRAKEN'}
+                  {s === 'kraken' ? 'KRAKEN' : 'BINANCE'}
                 </button>
               ))}
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
-              {source === 'binance' ? (
-                <select
-                  value={symbol}
-                  onChange={(e) => setSymbol(e.target.value)}
-                  className="rounded-md border border-void-border bg-void-raised px-2 py-1 font-mono text-[11px] text-slate-200 outline-none focus:border-amber/50"
-                >
-                  {REAL_DATA_ASSETS.map((a) => (
-                    <option key={a.pair} value={a.pair}>
-                      {a.label}
-                    </option>
-                  ))}
-                </select>
-              ) : (
+              {source === 'kraken' ? (
                 <select
                   value={krakenSymbol ?? ''}
                   onChange={(e) => setKrakenSymbol(e.target.value)}
@@ -262,6 +266,18 @@ export function BacktestPanel() {
                   {krakenAssets?.length === 0 && <option>no pairs found</option>}
                   {krakenAssets?.map((a) => (
                     <option key={a.pairKey} value={a.label}>
+                      {a.label}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <select
+                  value={symbol}
+                  onChange={(e) => setSymbol(e.target.value)}
+                  className="rounded-md border border-void-border bg-void-raised px-2 py-1 font-mono text-[11px] text-slate-200 outline-none focus:border-amber/50"
+                >
+                  {REAL_DATA_ASSETS.map((a) => (
+                    <option key={a.pair} value={a.pair}>
                       {a.label}
                     </option>
                   ))}
@@ -294,19 +310,7 @@ export function BacktestPanel() {
               </div>
               <div className="flex items-center gap-1.5">
                 <span className="font-mono text-[10px] text-slate-600">candles</span>
-                {source === 'binance' ? (
-                  <select
-                    value={granularity}
-                    onChange={(e) => setGranularity(e.target.value as Granularity)}
-                    className="rounded-md border border-void-border bg-void-raised px-2 py-1 font-mono text-[11px] text-slate-200 outline-none focus:border-amber/50"
-                  >
-                    {GRANULARITY_OPTIONS.map((g) => (
-                      <option key={g} value={g}>
-                        {g === 'auto' ? 'AUTO' : g}
-                      </option>
-                    ))}
-                  </select>
-                ) : (
+                {source === 'kraken' ? (
                   <select
                     value={krakenGranularity}
                     onChange={(e) => setKrakenGranularity(e.target.value as KrakenGranularity)}
@@ -315,6 +319,18 @@ export function BacktestPanel() {
                     {KRAKEN_GRANULARITY_OPTIONS.map((g) => (
                       <option key={g} value={g}>
                         {g}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <select
+                    value={granularity}
+                    onChange={(e) => setGranularity(e.target.value as Granularity)}
+                    className="rounded-md border border-void-border bg-void-raised px-2 py-1 font-mono text-[11px] text-slate-200 outline-none focus:border-amber/50"
+                  >
+                    {GRANULARITY_OPTIONS.map((g) => (
+                      <option key={g} value={g}>
+                        {g === 'auto' ? 'AUTO' : g}
                       </option>
                     ))}
                   </select>
@@ -333,8 +349,8 @@ export function BacktestPanel() {
 
         {error && (
           <p className="mt-2 font-mono text-[10px] text-loss">
-            {error} — {source === 'kraken' ? 'Kraken' : 'Binance'} may not list this pair, or the request was blocked
-            (network/CORS/rate-limit).
+            {error} — {source === 'kraken' || mode === 'basket' ? 'Kraken' : 'Binance'} may not list this pair, or
+            the request was blocked (network/CORS/rate-limit).
           </p>
         )}
 
@@ -399,6 +415,11 @@ export function BacktestPanel() {
       </div>
     </section>
   )
+}
+
+function clampBasketCount(n: number): number {
+  if (!Number.isFinite(n)) return DEFAULT_BASKET_ASSETS
+  return Math.min(MAX_BASKET_ASSETS, Math.max(2, Math.round(n)))
 }
 
 function Stat({ label, value, positive }: { label: string; value: string; positive?: boolean }) {

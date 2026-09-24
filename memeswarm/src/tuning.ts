@@ -8,30 +8,38 @@ import type { AgentId } from './types'
 export const SEED_EQUITY = 5000
 export const MAX_POSITIONS = 6
 
-// Assumed real tradable depth of a typical meme-coin pool, used to scale
-// slippage with position size (see slippageFor in simulation.ts/backtest.ts)
-// so equity can't compound into an unbounded number by sizing an ever-larger
-// dollar amount into the same shallow liquidity at a constant cost.
+// Assumed real tradable depth behind a position, used to scale slippage
+// with position size (see slippageFor in simulation.ts/backtest.ts) so
+// equity can't compound into an unbounded number by sizing an ever-larger
+// dollar amount at a constant cost.
 export const LIQUIDITY_DEPTH_USD = 400_000
 
-// Exit discipline: cut losers fast, let winners run uncapped (only a
-// trailing stop, armed once meaningfully in profit, locks gains in).
-// Tuned against a headless stats harness — a tight fixed take-profit
-// amputates the fat right tail that this asset class's returns actually
-// come from, while a trail that gives back more than it takes to arm can
-// still lock in a net loss. TRAIL must stay well under TRAIL_ARM.
+// STOP_LOSS_PCT/TRAIL_ARM_PCT/TRAIL_GIVEBACK_PCT/MOONSHOT_SAFETY_MULT below
+// are fixed percentages, used ONLY by runBacktest()'s synthetic self-check
+// in backtest.ts (fast, no network, for quick re-tuning sanity checks) —
+// NOT by the live engine or any real-data path anymore. The live engine
+// (simulation.ts) and every real-data backtest mode use the volatility-
+// scaled REAL_* constants further down instead: the tracked roster is
+// Kraken's full tradable universe, spanning BTC-scale majors to thin
+// microcaps, and a single fixed % stop can't be right for both at once —
+// sizing exits off each position's own entry-time volatility (an ATR-style
+// stop) applies the same "how many standard deviations of adverse move
+// before this trade is wrong" logic regardless of which asset was picked.
 //
 // Re-tuned via a 486-config grid search (backtest.ts as the feedback loop,
-// scored on 1-year runs, cross-checked at 24h/7d/30d): the single biggest
-// lever was ENTRY_REGIME_THRESHOLD. At the old 0.08 the desk fired on almost
-// any wobble — thousands of marginal trades a month, ~36% hit rate, and a
-// long-run edge that was reliably negative (backtested -90% over a
-// simulated year). Waiting for a much clearer regime (0.18) cuts trade
-// volume by ~85% but lifts the hit rate to ~55-60% and turns Sharpe
+// scored on 1-year synthetic runs, cross-checked at 24h/7d/30d): the single
+// biggest lever was ENTRY_REGIME_THRESHOLD. At the old 0.08 the desk fired
+// on almost any wobble — thousands of marginal trades a month, ~36% hit
+// rate, and a long-run edge that was reliably negative (backtested -90%
+// over a simulated year). Waiting for a much clearer regime (0.18) cuts
+// trade volume by ~85% but lifts the hit rate to ~55-60% and turns Sharpe
 // positive and stable across every horizon tested. STOP_LOSS tightened
 // (0.07 -> 0.05) and TRAIL_GIVEBACK tightened (0.05 -> 0.025) so losers are
 // cut faster and winners give back less before the trail locks them in —
 // a meaningfully better risk:reward per trade on top of the entry filter.
+// ENTRY_REGIME_THRESHOLD, MIN_SIGNAL_THRESHOLD and RISK_VETO_CHANCE below
+// are shared by both the synthetic self-check AND the live/real-data paths
+// — they gate WHETHER to enter, not how an open position's exits are sized.
 export const STOP_LOSS_PCT = 0.05
 export const TRAIL_ARM_PCT = 0.1
 export const TRAIL_GIVEBACK_PCT = 0.025
@@ -63,11 +71,9 @@ export const SESSION_LENGTH_HOURS = 24
 // EXIT/RISK — this only stops the desk from adding to a losing streak.
 export const MAX_SESSION_DRAWDOWN_PCT = 15
 
-// --- Real-asset tuning ---------------------------------------------------
-// Shared by backtest.ts's real-data mode (runBacktestOnRealCandles) AND
-// krakenEngine.ts's live paper-trading loop — both drive off actual market
-// prices for real assets (BTC/ETH/SOL/DOGE-class, not the meme-coin
-// synthetic walk), so they share one calibration instead of each
+// --- Real-asset (ATR-scaled) tuning --------------------------------------
+// The live engine's actual exit sizing (simulation.ts) and every real-data
+// backtest mode (backtest.ts) share this one calibration instead of each
 // re-deriving it and silently drifting apart. See backtest.ts's module
 // comment for the full derivation history of these values.
 export const REAL_VOL_WINDOW = 20 // trailing samples used to scale a fresh return into a z-score

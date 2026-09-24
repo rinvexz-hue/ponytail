@@ -1,10 +1,20 @@
-// PACKHUNT simulation engine — the ONLY file that knows this data is fake.
+// PACKHUNT simulation engine — the ONLY file that knows this data is fake in
+// one specific sense: trades are simulated (paper only, no order ever
+// placed), but every price this engine trades against is real, live Kraken
+// market data. It owns a private mutable state, advances it on a jittered
+// tick loop, and hands the UI layer immutable snapshots via
+// `start(onTick, onEvent)`.
 //
-// It owns a private mutable state, advances it on a jittered tick loop, and
-// hands the UI layer immutable snapshots via `start(onTick, onEvent)`.
-// A real backend (Dexscreener/Birdeye/Pump.fun reads) can replace the body
-// of `tick()` without any UI component ever knowing, as long as it keeps
-// producing `SimState` snapshots shaped the same way.
+// Two independent cadences drive this engine:
+//  - A fast, jittered UI tick (250-800ms) that animates agent "mood",
+//    writes flavor log entries, checks open positions against the latest
+//    known price for an exit, and attempts new entries (probability scaled
+//    to the real wall-clock time elapsed, so tick jitter never changes the
+//    expected number of entries per real hour).
+//  - A slower Kraken poll (~20s) that is the only place real market state
+//    changes: it refreshes every tracked asset's price, recomputes each
+//    asset's rolling volatility and trend, and updates the shared market
+//    regime signal those decisions are gated on.
 
 import type {
   ActionType,
@@ -14,14 +24,16 @@ import type {
   EventListener,
   KpiState,
   LogEntry,
+  MarketStatus,
   Position,
-  RealMarketTick,
   SimEvent,
   SimState,
   TickListener,
   TickerState,
 } from './types'
-import { AGENT_IDS, TICKER_SYMBOLS } from './lib/agents'
+import { AGENT_IDS } from './lib/agents'
+import { discoverKrakenAssets, fetchKrakenTicker } from './lib/krakenData'
+import type { KrakenAsset, KrakenTick } from './lib/krakenData'
 import { loadPersistedState, savePersistedState } from './persistence'
 import { clamp, choice, diffs, mean, randNormal, randRange, stdDev, uid } from './lib/math'
 import {
@@ -32,13 +44,28 @@ import {
   MAX_POSITIONS,
   MAX_SESSION_DRAWDOWN_PCT,
   MIN_SIGNAL_THRESHOLD,
-  MOONSHOT_SAFETY_MULT,
+  REAL_ENTRY_ATTEMPT_CHANCE_PER_HOUR,
+  REAL_MOONSHOT_MAX_GAIN,
+  REAL_MOONSHOT_MIN_GAIN,
+  REAL_MOONSHOT_VOL_MULT,
+  REAL_RISK_FLAG_CHANCE_PER_HOUR,
+  REAL_STOP_LOSS_MAX_PCT,
+  REAL_STOP_LOSS_MIN_PCT,
+  REAL_STOP_LOSS_VOL_MULT,
+  REAL_TRAIL_ARM_MAX_PCT,
+  REAL_TRAIL_ARM_MIN_PCT,
+  REAL_TRAIL_ARM_VOL_MULT,
+  REAL_TRAIL_GIVEBACK_MAX_PCT,
+  REAL_TRAIL_GIVEBACK_MIN_PCT,
+  REAL_TRAIL_GIVEBACK_VOL_MULT,
+  REAL_TREND_FAST_WINDOW,
+  REAL_TREND_MIN_STREAK,
+  REAL_TREND_SLOW_WINDOW,
+  REAL_VOL_FLOOR,
+  REAL_VOL_WINDOW,
   RISK_VETO_CHANCE,
   SEED_EQUITY,
   SESSION_LENGTH_HOURS,
-  STOP_LOSS_PCT,
-  TRAIL_ARM_PCT,
-  TRAIL_GIVEBACK_PCT,
 } from './tuning'
 
 // ---------- tunables ----------
@@ -49,6 +76,8 @@ const TICKS_PER_CANDLE = 20
 const SPARKLINE_LEN = 30
 const EQUITY_SERIES_LEN = 60
 const LOG_MAX = 60
+const POLL_INTERVAL_MS = 20_000 // see krakenData.ts's ponytail note on Kraken's public rate-limit budget
+const TRACK_WINDOW = REAL_VOL_WINDOW + REAL_TREND_SLOW_WINDOW
 
 const ACTIONS_BY_AGENT: Record<AgentId, ActionType[]> = {
   scout: ['ROUTE', 'QUOTE'],
@@ -63,10 +92,10 @@ const ACTIONS_BY_AGENT: Record<AgentId, ActionType[]> = {
 
 const REASONS_BY_AGENT: Record<AgentId, string[]> = {
   scout: [
-    'new pair detected on-chain',
-    'liquidity pool just seeded',
-    'fresh launch flagged for scan',
-    'contract deployed under 2min ago',
+    'new 24h volume leader detected',
+    'order book depth increased sharply',
+    'spread tightened on watchlist pair',
+    'listing re-scanned for signal',
   ],
   sniper: [
     'momentum confirmed',
@@ -75,28 +104,28 @@ const REASONS_BY_AGENT: Record<AgentId, string[]> = {
     'volume spike on entry candle',
   ],
   sentiment: [
-    'hype spike detected',
-    'trending across socials',
-    'influencer mention surge',
-    'community sentiment turning bullish',
+    'volatility regime turning bullish',
+    'momentum broadening across the book',
+    'trend confirmation strengthening',
+    'market breadth improving',
   ],
   whalewatch: [
-    'large wallet accumulating',
-    'whale wallet exited position',
-    'smart money inflow detected',
-    'top holder concentration rising',
+    'large order flow accumulating',
+    'order book imbalance shifting bid-side',
+    'block trade detected on the tape',
+    'resting size building at the bid',
   ],
   liquidity: [
-    'pool depth healthy',
+    'order book depth healthy',
     'slippage tolerance adjusted',
-    'thin liquidity — reducing size',
-    'LP unlock detected',
+    'thin book — reducing size',
+    'spread widened — re-checking',
   ],
   risk: [
-    'contract ownership renounced',
-    'honeypot check passed',
-    'mint authority still active',
-    'liquidity lock verified',
+    'volatility spike flagged',
+    'abnormal spread detected',
+    'drawdown check passed',
+    'position exposure verified',
   ],
   exit: [
     'take-profit target hit',
@@ -106,13 +135,13 @@ const REASONS_BY_AGENT: Record<AgentId, string[]> = {
   ],
   treasury: [
     'settlement batch processed',
-    'wallet rebalanced across venues',
-    'gas reserve topped up',
+    'balances reconciled',
+    'fee reserve topped up',
     'profit swept to treasury',
   ],
 }
 
-const RISK_FLAG_REASON = 'rug risk flagged — exited'
+const RISK_FLAG_REASON = 'volatility risk flagged — exited'
 const RISK_VETO_REASON = 'entry blocked — risk desk vetoed'
 const KILL_SWITCH_REASON = 'entry blocked — session kill-switch tripped'
 const TICKET_CEILING_REASON = 'entry blocked — session ticket ceiling reached'
@@ -155,8 +184,10 @@ interface EngineTicker {
   symbol: string
   basePrice: number
   pct: number
-  beta: number
   hasRealData: boolean
+  closes: number[] // rolling price history — vol/trend are computed from this on each Kraken poll
+  vol: number
+  trendUpStreak: number
 }
 
 interface EngineAgent {
@@ -174,6 +205,7 @@ interface EnginePosition {
   peakPrice: number
   units: number
   notional: number
+  entryVol: number // this asset's volatility AT ENTRY — exits are sized off this, not a fixed %, since the roster spans everything from BTC to illiquid microcaps
   openedAtCycle: number
   openedAt: number
 }
@@ -183,22 +215,15 @@ class SwarmEngine {
   private sessionStart = Date.now()
   private marketFactor = 0
 
-  // Placeholder prices only — real ones (Dexscreener) land via
-  // applyRealMarketData() shortly after the engine starts. A ticker keeps
-  // this placeholder, marked hasRealData: false, until its first real fetch
-  // resolves; the UI shows those as "resolving" rather than inventing a price.
-  private tickers: EngineTicker[] = TICKER_SYMBOLS.map((symbol, i) => ({
-    symbol,
-    basePrice: randRange(0.000002, 1.4) * (i % 3 === 0 ? 100 : 1),
-    pct: randRange(-8, 8),
-    beta: randRange(0.4, 1.1),
-    hasRealData: false,
-  }))
-
-  // Real aggregate market momentum, derived from live prices — see
-  // applyRealMarketData(). marketFactor (below) drifts around this instead
-  // of around zero, so agent flavor/regime-gating tracks real conditions.
-  private realMarketFactor = 0
+  // Populated once discoverKrakenAssets() resolves — see bootstrap(). Empty
+  // until then; the UI shows an empty ticker bar for that brief window
+  // rather than inventing placeholder prices.
+  private tickers: EngineTicker[] = []
+  private assets: KrakenAsset[] = [] // Kraken's own pairKeys — needed for every poll() call, kept separate from EngineTicker's display-only fields
+  private status: MarketStatus = 'connecting'
+  private statusDetail: string | undefined
+  private started = false
+  private lastTickAt = Date.now()
 
   private agents: Record<AgentId, EngineAgent> = Object.fromEntries(
     AGENT_IDS.map((id) => [
@@ -220,7 +245,6 @@ class SwarmEngine {
   private allTimeHighEquity = SEED_EQUITY
   private volume24h = 0
   private fills = 0
-  private venues = 5
   private wins = 0
   private losses = 0
   private resolvedCount = 0
@@ -237,6 +261,7 @@ class SwarmEngine {
   private alignment = 62
 
   private timeoutId: ReturnType<typeof setTimeout> | null = null
+  private pollTimer: ReturnType<typeof setTimeout> | null = null
   private tickListeners = new Set<TickListener>()
   private eventListeners = new Set<EventListener>()
 
@@ -261,8 +286,8 @@ class SwarmEngine {
   // Restores equity, positions, the trade log, and balance history from this
   // browser's localStorage (see persistence.ts) so a page reload doesn't
   // wipe out a session's trading. Ticker prices/agent flavor are NOT
-  // restored — those re-resolve within seconds from Dexscreener and the
-  // regular tick loop, and persisting them would just be stale noise.
+  // restored — those re-resolve within seconds from Kraken and the regular
+  // tick loop, and persisting them would just be stale noise.
   private hydrateFromStorage(): boolean {
     const saved = loadPersistedState()
     if (!saved) return false
@@ -274,12 +299,11 @@ class SwarmEngine {
     this.allTimeHighEquity = saved.allTimeHighEquity
     this.volume24h = saved.volume24h
     this.fills = saved.fills
-    this.venues = saved.venues
     this.wins = saved.wins
     this.losses = saved.losses
     this.resolvedCount = saved.resolvedCount
     this.log = saved.log
-    this.openPositions = saved.openPositions
+    this.openPositions = saved.openPositions.map((p) => ({ ...p, entryVol: p.entryVol ?? REAL_VOL_FLOOR }))
     this.candles = saved.candles
     this.movingAverage = saved.movingAverage
     return true
@@ -295,7 +319,6 @@ class SwarmEngine {
       allTimeHighEquity: this.allTimeHighEquity,
       volume24h: this.volume24h,
       fills: this.fills,
-      venues: this.venues,
       wins: this.wins,
       losses: this.losses,
       resolvedCount: this.resolvedCount,
@@ -353,6 +376,10 @@ class SwarmEngine {
     this.tickListeners.add(onTick)
     if (onEvent) this.eventListeners.add(onEvent)
     if (!this.timeoutId) this.scheduleNext()
+    if (!this.started) {
+      this.started = true
+      this.bootstrap()
+    }
 
     // Belt-and-braces save on tab close/refresh — the throttled save in
     // tick() covers normal play, but the last few seconds before closing
@@ -364,7 +391,7 @@ class SwarmEngine {
       window.addEventListener('beforeunload', flush)
     }
 
-    onTick(this.snapshot(true))
+    onTick(this.snapshot())
     return () => {
       this.tickListeners.delete(onTick)
       if (onEvent) this.eventListeners.delete(onEvent)
@@ -374,6 +401,98 @@ class SwarmEngine {
   stop() {
     if (this.timeoutId) clearTimeout(this.timeoutId)
     this.timeoutId = null
+    if (this.pollTimer) clearTimeout(this.pollTimer)
+    this.pollTimer = null
+  }
+
+  // Discovers Kraken's full tradable USD/USDT roster once, seeds a tracked
+  // ticker per asset, then starts the recurring poll loop that is the only
+  // place real market data changes (see the module comment).
+  private async bootstrap() {
+    let assets: KrakenAsset[]
+    try {
+      assets = await discoverKrakenAssets()
+    } catch (e) {
+      this.status = 'error'
+      this.statusDetail = e instanceof Error ? e.message : 'failed to discover Kraken pairs'
+      this.pollTimer = setTimeout(() => this.bootstrap(), POLL_INTERVAL_MS)
+      return
+    }
+    if (assets.length === 0) {
+      this.status = 'error'
+      this.statusDetail = 'no tradable pairs discovered on Kraken'
+      this.pollTimer = setTimeout(() => this.bootstrap(), POLL_INTERVAL_MS)
+      return
+    }
+
+    this.assets = assets
+    this.tickers = assets.map((a) => ({
+      symbol: a.label,
+      basePrice: 1,
+      pct: 0,
+      hasRealData: false,
+      closes: [],
+      vol: REAL_VOL_FLOOR,
+      trendUpStreak: 0,
+    }))
+
+    this.poll()
+  }
+
+  private async poll() {
+    try {
+      const ticks = await fetchKrakenTicker(this.assets)
+      const resolved = Object.keys(ticks).length
+      if (resolved === this.assets.length) {
+        this.status = 'live'
+        this.statusDetail = undefined
+      } else if (resolved > 0) {
+        this.status = 'degraded'
+        this.statusDetail = `${resolved}/${this.assets.length} pairs resolved`
+      } else {
+        this.status = 'error'
+        this.statusDetail = 'no pairs resolved — check network/CORS'
+      }
+      this.applyKrakenPoll(ticks)
+    } catch (e) {
+      this.status = 'error'
+      this.statusDetail = e instanceof Error ? e.message : 'Kraken poll failed'
+    }
+    this.pollTimer = setTimeout(() => this.poll(), POLL_INTERVAL_MS)
+  }
+
+  // The only place real market state changes: refreshes every tracked
+  // asset's price, recomputes its rolling volatility and moving-average
+  // trend, and updates the shared regime signal (marketFactor) that entry
+  // decisions are gated on. Runs once per Kraken poll (~20s), independent
+  // of the much faster cosmetic UI tick below.
+  private applyKrakenPoll(ticks: Record<string, KrakenTick>) {
+    const zScores: number[] = []
+
+    for (const t of this.tickers) {
+      const real = ticks[t.symbol]
+      if (!real) continue
+      t.basePrice = real.price
+      t.pct = real.changePct
+      t.hasRealData = true
+
+      t.closes = pushCapped(t.closes, real.price, TRACK_WINDOW)
+      if (t.closes.length >= 2) {
+        const returns = diffs(t.closes).map((d, i) => d / t.closes[i])
+        const window = returns.slice(-REAL_VOL_WINDOW)
+        t.vol = window.length >= 5 ? stdDev(window) || REAL_VOL_FLOOR : REAL_VOL_FLOOR
+        zScores.push(clamp(returns[returns.length - 1] / t.vol, -5, 5))
+
+        const fastMa = mean(t.closes.slice(-REAL_TREND_FAST_WINDOW))
+        const slowMa = mean(t.closes.slice(-REAL_TREND_SLOW_WINDOW))
+        t.trendUpStreak = real.price > fastMa && fastMa > slowMa ? t.trendUpStreak + 1 : 0
+      }
+    }
+
+    if (zScores.length > 0) {
+      const zAvg = mean(zScores)
+      this.marketFactor = clamp(this.marketFactor + zAvg * 0.03 - this.marketFactor * 0.06, -1, 1)
+    }
   }
 
   private scheduleNext() {
@@ -390,65 +509,25 @@ class SwarmEngine {
 
   private tick() {
     this.cycle += 1
+    const now = Date.now()
+    const hourFraction = (now - this.lastTickAt) / 3_600_000
+    this.lastTickAt = now
 
-    if (Date.now() - this.sessionStartAt >= SESSION_LENGTH_HOURS * 60 * 60 * 1000) {
-      this.sessionStartAt = Date.now()
+    if (now - this.sessionStartAt >= SESSION_LENGTH_HOURS * 60 * 60 * 1000) {
+      this.sessionStartAt = now
       this.sessionStartEquity = this.equity
       this.sessionEntries = 0
     }
 
-    // Agent flavor still jitters tick to tick (we have no live sentiment/
-    // on-chain feed yet — see marketData.ts's module comment), but it now
-    // drifts around realMarketFactor (derived from real prices) instead of
-    // zero, so the swarm's "mood" tracks genuine market conditions.
-    this.marketFactor = clamp(
-      this.marketFactor + randNormal() * 0.03 + (this.realMarketFactor - this.marketFactor) * 0.06,
-      -1,
-      1,
-    )
-
-    this.tickTickers()
     const flavorAppended = this.tickAgentsAndLog()
     const positionsAppended = this.tickPositions()
-    const entryAppended = this.tryOpenPosition()
+    const entryAppended = this.tryOpenPosition(hourFraction)
     this.tickEquity()
     this.tickCandle()
     this.tickMeters()
     this.maybePersist()
 
     this.pushOut(flavorAppended || positionsAppended || entryAppended)
-  }
-
-  private tickTickers() {
-    for (const t of this.tickers) {
-      // Once a ticker has real Dexscreener data, its price/% change come
-      // ONLY from applyRealMarketData() — no synthetic movement layered on
-      // top. Before the first real fetch resolves, it fake-walks so the
-      // ticker bar isn't a dead placeholder while data is loading.
-      if (t.hasRealData) continue
-      const move = t.beta * this.marketFactor * 0.6 + randNormal() * 0.5
-      t.pct = clamp(t.pct + move, -95, 900)
-      t.pct -= t.pct * 0.01
-    }
-  }
-
-  // Real prices flow in here (see store.ts wiring marketDataEngine to this).
-  // changePct is genuine (Dexscreener's 24h change) — we back-solve basePrice
-  // so priceFor() = basePrice*(1+pct/100) reproduces the real priceUsd exactly,
-  // without touching how the rest of the engine reads ticker prices.
-  applyRealMarketData(ticks: Record<string, RealMarketTick>) {
-    for (const t of this.tickers) {
-      const real = ticks[t.symbol]
-      if (!real) continue
-      t.pct = real.changePct
-      t.basePrice = real.priceUsd / (1 + real.changePct / 100)
-      t.hasRealData = true
-    }
-
-    const withData = this.tickers.filter((t) => t.hasRealData)
-    if (withData.length > 0) {
-      this.realMarketFactor = clamp(mean(withData.map((t) => t.pct)) / 10, -1, 1)
-    }
   }
 
   private tickAgentsAndLog(): boolean {
@@ -491,27 +570,11 @@ class SwarmEngine {
 
   private priceFor(symbol: string): number {
     const t = this.tickers.find((x) => x.symbol === symbol)
-    if (!t) return 1
-    return t.basePrice * (1 + t.pct / 100)
+    return t ? t.basePrice : 1
   }
 
   private slippageFor(notional: number): number {
-    // worse LIQUIDITY reading -> thinner book -> more slippage on fills, plus
-    // a market-impact term: a meme-coin pool has finite real depth, so a
-    // position sized large relative to that depth eats real impact cost on
-    // the way in and out. Without this, sizing a fixed % of equity every
-    // trade compounds without limit — no real book fills an ever-larger
-    // notional into the same shallow pool at the same cost.
-    const liquidityValue = this.agents.liquidity.value
-    const baseSlip = clamp(0.0012 - liquidityValue * 0.00015, 0.0002, 0.006)
-    const impactSlip = clamp(notional / LIQUIDITY_DEPTH_USD, 0, 0.08)
-    return baseSlip + impactSlip
-  }
-
-  private maybeDriftVenues() {
-    if (Math.random() < 0.04) {
-      this.venues = Math.round(clamp(this.venues + (Math.random() < 0.5 ? -1 : 1), 3, 9))
-    }
+    return clamp(0.0012 + notional / LIQUIDITY_DEPTH_USD, 0.0002, 0.08)
   }
 
   private pushLog(entry: Omit<LogEntry, 'id' | 'cycle' | 'timestamp'>) {
@@ -521,22 +584,23 @@ class SwarmEngine {
 
   // Flavor-only: every agent logged here (everyone except SNIPER/EXIT, whose
   // real activity is wired to actual positions below) is narrating, not
-  // trading. TREASURY's 'FILL' action used to also inject a random pnl into
-  // equity and bump fills/volume24h — phantom trades untethered from any
-  // real position, silently violating tickEquity()'s "equity only moves via
-  // closePosition()" invariant and overstating fills/volume24h. Real
-  // fills/wins/losses/equity/volume24h all come from tryOpenPosition() and
-  // closePosition() only, same as SNIPER/EXIT/RISK already do.
+  // trading. Equity/fills/wins/losses/volume24h all come exclusively from
+  // tryOpenPosition()/closePosition() — never from a flavor log entry.
   private appendLogEntry(agentId: AgentId) {
     const action = choice(ACTIONS_BY_AGENT[agentId])
     const reason = choice(REASONS_BY_AGENT[agentId])
-    const token = choice(this.tickers).symbol
-    this.maybeDriftVenues()
+    const token = this.tickers.length > 0 ? choice(this.tickers).symbol : '—'
     this.pushLog({ agentId, action, token, pnl: null, reason })
   }
 
-  // EXIT's discipline: cut a loser fast (STOP_LOSS_PCT), let a winner run
-  // uncapped (only a trailing stop, armed once meaningfully in profit).
+  // EXIT's discipline: cut a loser fast, let a winner run (only a trailing
+  // stop, armed once meaningfully in profit, locks gains in) — all sized off
+  // the volatility actually observed WHEN THIS POSITION WAS OPENED (an
+  // ATR-style stop), not a fixed percentage. The roster spans BTC-scale
+  // majors to thin microcaps, so a fixed 5% stop would be far too tight for
+  // one and meaningless for the other; sizing off each position's own
+  // entry-time volatility applies the same "how many standard deviations of
+  // adverse move before this trade is wrong" logic to every asset alike.
   // RISK's discipline: on a flag, force-close the single worst open
   // position immediately, regardless of EXIT's own rules.
   private tickPositions(): boolean {
@@ -565,10 +629,19 @@ class SwarmEngine {
       const current = this.priceFor(p.token)
       p.peakPrice = Math.max(p.peakPrice, current)
 
+      const stopPct = clamp(p.entryVol * REAL_STOP_LOSS_VOL_MULT, REAL_STOP_LOSS_MIN_PCT, REAL_STOP_LOSS_MAX_PCT)
+      const trailArmPct = clamp(p.entryVol * REAL_TRAIL_ARM_VOL_MULT, REAL_TRAIL_ARM_MIN_PCT, REAL_TRAIL_ARM_MAX_PCT)
+      const trailGivebackPct = clamp(
+        p.entryVol * REAL_TRAIL_GIVEBACK_VOL_MULT,
+        REAL_TRAIL_GIVEBACK_MIN_PCT,
+        REAL_TRAIL_GIVEBACK_MAX_PCT,
+      )
+      const moonshotMult = 1 + clamp(p.entryVol * REAL_MOONSHOT_VOL_MULT, REAL_MOONSHOT_MIN_GAIN, REAL_MOONSHOT_MAX_GAIN)
+
       let reason: string | null = null
-      if (current <= p.entryPrice * (1 - STOP_LOSS_PCT)) reason = 'stop-loss triggered'
-      else if (current >= p.entryPrice * MOONSHOT_SAFETY_MULT) reason = 'take-profit target hit'
-      else if (current > p.entryPrice * (1 + TRAIL_ARM_PCT) && current <= p.peakPrice * (1 - TRAIL_GIVEBACK_PCT)) {
+      if (current <= p.entryPrice * (1 - stopPct)) reason = 'stop-loss triggered'
+      else if (current >= p.entryPrice * moonshotMult) reason = 'take-profit target hit'
+      else if (current > p.entryPrice * (1 + trailArmPct) && current <= p.peakPrice * (1 - trailGivebackPct)) {
         reason = 'trailing stop executed'
       }
 
@@ -600,23 +673,23 @@ class SwarmEngine {
     this.fills += 1
     this.volume24h += this.equity * randRange(0.0008, 0.006)
 
-    this.maybeDriftVenues()
     this.pushLog({ agentId, action, token: p.token, pnl, reason })
   }
 
   // SNIPER's discipline: only buy with a clearly-confirmed regime
   // (marketFactor comfortably trending up, not just above zero), only when
-  // SCOUT/SENTIMENT/WHALE-WATCH's composite reading genuinely agrees (not
-  // just "not too bearish"), size to that conviction, and respect a RISK
-  // veto. Re-tuned via backtest.ts: firing on any marginal wobble produced
-  // thousands of low-quality trades a month and a reliably negative
-  // long-run edge (see tuning.ts). Waiting for real confirmation trades
-  // roughly 85% less often but wins much more often when it does.
-  private tryOpenPosition(): boolean {
+  // SCOUT/SENTIMENT/WHALE-WATCH's composite reading genuinely agrees, only
+  // on an asset whose own price is confirming an uptrend (fast MA above
+  // slow MA for several ticks running), sized to conviction, and respecting
+  // a RISK veto and the session's entry/drawdown containment.
+  private tryOpenPosition(hourFraction: number): boolean {
     const agent = this.agents.sniper
     const activeChance = agent.status === 'EXECUTING' ? 0.55 : agent.status === 'SCANNING' ? 0.2 : agent.status === 'GUARDING' ? 0.15 : 0.05
     if (Math.random() >= activeChance) return false
     if (this.openPositions.length >= MAX_POSITIONS) return false
+
+    const entryChance = 1 - Math.pow(1 - REAL_ENTRY_ATTEMPT_CHANCE_PER_HOUR, Math.max(hourFraction, 0))
+    if (Math.random() >= entryChance) return false
 
     const tradeable = this.tickers.filter((t) => t.hasRealData)
     if (tradeable.length === 0) return false // no real prices yet — never invent an entry
@@ -630,17 +703,8 @@ class SwarmEngine {
     if (this.marketFactor <= ENTRY_REGIME_THRESHOLD) return false
 
     const signal = (this.agents.scout.value + this.agents.sentiment.value + this.agents.whalewatch.value) / 3
-    // SNIPER only fires when the desk actually agrees — a negative
-    // composite reading used to still open a (smaller) position, which
-    // contradicted the "only fires when SCOUT/SENTIMENT/WHALE-WATCH agree"
-    // premise. Now it's a hard gate, not just a sizing input.
     if (signal <= MIN_SIGNAL_THRESHOLD) return false
 
-    // Session risk containment (see tuning.ts): a circuit breaker that
-    // halts new entries once this session's own drawdown gets too deep,
-    // and a hard ceiling on new entries per session regardless of how good
-    // the signal looks — both independent of per-trade entry quality, to
-    // cap how much damage one bad streak can do.
     const killSwitchActive = this.equity <= this.sessionStartEquity * (1 - MAX_SESSION_DRAWDOWN_PCT / 100)
     if (killSwitchActive) {
       this.killSwitchBlocks += 1
@@ -653,14 +717,14 @@ class SwarmEngine {
       return true
     }
 
-    // Picking whichever ticker is currently moving hardest (by |24h %|)
-    // was tested and measurably hurts the edge: it's buying the local
-    // extreme, in whichever direction it happens to be, right before the
-    // asset's next move — no different from chasing a pump into its own
-    // dump. There's no per-ticker signal to genuinely pick a winner from
-    // here, so an unbiased pick from the real-data pool outperforms trying
-    // to be clever about it.
-    const best = choice(tradeable)
+    const heldTokens = new Set(this.openPositions.map((p) => p.token))
+    const candidates = tradeable.filter((t) => !heldTokens.has(t.symbol) && t.trendUpStreak >= REAL_TREND_MIN_STREAK)
+    if (candidates.length === 0) return false
+
+    // An unbiased pick among trend-confirmed candidates, never the biggest
+    // mover — chasing the loudest ticker means buying the local extreme
+    // right before it reverts, measurably hurting the edge (see backtest.ts).
+    const best = choice(candidates)
     const token = best.symbol
     const sizeFrac = clamp(0.03 + signal * 0.006, 0.015, 0.12)
     const notional = this.equity * sizeFrac
@@ -674,6 +738,7 @@ class SwarmEngine {
       peakPrice: entryPrice,
       units: notional / entryPrice,
       notional,
+      entryVol: best.vol,
       openedAtCycle: this.cycle,
       openedAt: Date.now(),
     })
@@ -681,7 +746,6 @@ class SwarmEngine {
     this.fills += 1
     this.sessionEntries += 1
     this.volume24h += this.equity * randRange(0.0008, 0.006)
-    this.maybeDriftVenues()
     this.pushLog({ agentId: 'sniper', action: 'BUY', token, pnl: null, reason: choice(REASONS_BY_AGENT.sniper) })
     return true
   }
@@ -752,7 +816,6 @@ class SwarmEngine {
       isAllTimeHigh: this.equity >= this.allTimeHighEquity,
       volume24h: this.volume24h,
       fills: this.fills,
-      venues: this.venues,
       wins: this.wins,
       losses: this.losses,
       hitRatePct: totalTrades > 0 ? (this.wins / totalTrades) * 100 : 50,
@@ -784,10 +847,10 @@ class SwarmEngine {
     })
   }
 
-  private snapshot(_initial = false): SimState {
+  private snapshot(): SimState {
     const tickers: TickerState[] = this.tickers.map((t) => ({
       symbol: t.symbol,
-      price: t.basePrice * (1 + t.pct / 100),
+      price: t.basePrice,
       changePct: t.pct,
       direction: t.pct >= 0 ? 1 : -1,
       hasRealData: t.hasRealData,
@@ -813,6 +876,8 @@ class SwarmEngine {
     return {
       cycle: this.cycle,
       sessionStart: this.sessionStart,
+      marketStatus: this.status,
+      marketStatusDetail: this.statusDetail,
       tickers,
       agents,
       candles: this.candles,

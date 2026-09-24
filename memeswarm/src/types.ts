@@ -40,19 +40,6 @@ export interface TickerState {
   hasRealData: boolean
 }
 
-// Real, read-only market data pulled from a public API (Dexscreener) — no
-// wallet, no execution, just genuine prices. See marketData.ts.
-export interface RealMarketTick {
-  symbol: string
-  priceUsd: number
-  changePct: number
-  liquidityUsd: number
-  volume24h: number
-  chainId: string
-  pairUrl: string
-  updatedAt: number
-}
-
 export type MarketStatus = 'connecting' | 'live' | 'degraded' | 'error'
 
 export interface Candle {
@@ -98,7 +85,6 @@ export interface KpiState {
   isAllTimeHigh: boolean
   volume24h: number
   fills: number
-  venues: number
   wins: number
   losses: number
   hitRatePct: number
@@ -119,6 +105,8 @@ export interface RiskSessionState {
 export interface SimState {
   cycle: number
   sessionStart: number
+  marketStatus: MarketStatus
+  marketStatusDetail?: string
   tickers: TickerState[]
   agents: Record<AgentId, AgentState>
   candles: Candle[]

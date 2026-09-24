@@ -18,6 +18,7 @@ export interface PersistedPosition {
   peakPrice: number
   units: number
   notional: number
+  entryVol?: number // optional: absent in state saved before ATR-scaled exits shipped
   openedAtCycle: number
   openedAt: number
 }
@@ -32,7 +33,6 @@ export interface PersistedState {
   allTimeHighEquity: number
   volume24h: number
   fills: number
-  venues: number
   wins: number
   losses: number
   resolvedCount: number

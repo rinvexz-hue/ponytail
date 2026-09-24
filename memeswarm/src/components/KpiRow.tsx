@@ -60,9 +60,7 @@ export function KpiRow() {
       <KpiCard
         label="24H VOLUME"
         sub={
-          <span className="font-mono text-[10px] text-slate-600">
-            {kpis.fills.toLocaleString()} fills · {kpis.venues} venues
-          </span>
+          <span className="font-mono text-[10px] text-slate-600">{kpis.fills.toLocaleString()} fills · Kraken</span>
         }
       >
         <AnimatedNumber

@@ -1,19 +1,18 @@
 import { create } from 'zustand'
 import { swarmEngine } from './simulation'
-import { marketDataEngine } from './marketData'
 import { playSoundForEvent } from './sounds'
-import type { MarketStatus, SimState } from './types'
+import type { SimState } from './types'
 
 interface SwarmStore extends SimState {
   selectedAgentId: string | null
   selectAgent: (id: string | null) => void
-  marketStatus: MarketStatus
-  marketStatusDetail?: string
 }
 
 const initialState: SimState = {
   cycle: 0,
   sessionStart: Date.now(),
+  marketStatus: 'connecting',
+  marketStatusDetail: undefined,
   tickers: [],
   agents: {} as SimState['agents'],
   candles: [],
@@ -28,7 +27,6 @@ const initialState: SimState = {
     isAllTimeHigh: false,
     volume24h: 0,
     fills: 0,
-    venues: 0,
     wins: 0,
     losses: 0,
     hitRatePct: 0,
@@ -53,22 +51,13 @@ export const useSwarmStore = create<SwarmStore>((set) => ({
   ...initialState,
   selectedAgentId: null,
   selectAgent: (id) => set({ selectedAgentId: id }),
-  marketStatus: 'connecting',
-  marketStatusDetail: undefined,
 }))
 
-// Singleton: the engine starts once per app lifetime and pushes snapshots
-// straight into the store. Sound events are routed separately so playing a
-// sound never triggers a React re-render.
+// Singleton: the engine starts once per app lifetime, discovers Kraken's
+// full tradable roster itself, and pushes snapshots straight into the
+// store. Sound events are routed separately so playing a sound never
+// triggers a React re-render.
 swarmEngine.start(
   (snapshot) => useSwarmStore.setState(snapshot),
   (event) => playSoundForEvent(event),
-)
-
-// Real, read-only market data (Dexscreener) feeds straight into the sim
-// engine's tickers — see marketData.ts and simulation.ts's
-// applyRealMarketData(). No wallet, no execution, just genuine prices.
-marketDataEngine.start(
-  (ticks) => swarmEngine.applyRealMarketData(ticks),
-  (status, detail) => useSwarmStore.setState({ marketStatus: status, marketStatusDetail: detail }),
 )

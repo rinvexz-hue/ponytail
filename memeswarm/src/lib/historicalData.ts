@@ -19,22 +19,15 @@ export interface RealDataAsset {
   pair: string // Binance symbol, e.g. "PEPEUSDT"
 }
 
-// Curated list: the swarm's own meme-coin roster (see lib/agents.ts) plus a
-// few majors, so the backtest can answer "does this edge hold outside meme
-// coins too, over real history?" — not just synthetic data shaped to look
-// like one asset class. Some roster tickers (MEW, BRETT, TURBO) may not be
-// listed on Binance; picking those fails with a clear error rather than
-// silently substituting a different asset.
+// A handful of majors as a secondary, independent real-data source for the
+// single-asset backtest mode alongside Kraken (see BacktestPanel.tsx) — not
+// the primary asset universe, which is Kraken's own full discovered roster
+// (see lib/krakenData.ts's discoverKrakenAssets()).
 export const REAL_DATA_ASSETS: RealDataAsset[] = [
   { label: 'BTC', pair: 'BTCUSDT' },
   { label: 'ETH', pair: 'ETHUSDT' },
   { label: 'SOL', pair: 'SOLUSDT' },
   { label: 'DOGE', pair: 'DOGEUSDT' },
-  { label: 'PEPE', pair: 'PEPEUSDT' },
-  { label: 'WIF', pair: 'WIFUSDT' },
-  { label: 'BONK', pair: 'BONKUSDT' },
-  { label: 'FLOKI', pair: 'FLOKIUSDT' },
-  { label: 'POPCAT', pair: 'POPCATUSDT' },
 ]
 
 const KLINES_ENDPOINT = 'https://api.binance.com/api/v3/klines'

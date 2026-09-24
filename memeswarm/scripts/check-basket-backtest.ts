@@ -2,10 +2,10 @@
 // no fixtures, no framework. Run with: npx tsx scripts/check-basket-backtest.ts
 //
 // Covers the one piece of genuinely new logic: aligning several real candle
-// series (which can start/end at different times, e.g. a later Binance
+// series (which can start/end at different times, e.g. a later Kraken
 // listing) by intersecting timestamps rather than zipping by array index.
-// Everything else in runBacktestOnRealBasket reuses already-exercised
-// entry/exit math from runBacktest/runBacktestOnRealCandles.
+// The ATR-scaled exit math and trend-confirmation entry gate reuse
+// already-exercised logic from runBacktestOnRealCandles/simulation.ts.
 
 import { runBacktestOnRealBasket } from '../src/backtest'
 import type { RealBasketAsset } from '../src/backtest'

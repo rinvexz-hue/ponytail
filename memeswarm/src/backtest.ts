@@ -1,13 +1,14 @@
-// Headless statistical backtester — runs the SAME entry/exit rules as the
-// live engine (simulation.ts), but against fresh synthetic price action
-// instead of real Dexscreener prices, and with no per-tick timers, so a
-// week or a month of "trading" completes instantly instead of requiring
-// you to sit and watch the live floor for that long.
+// Headless statistical backtester — runBacktest() below is a fast, no-
+// network synthetic self-check (no per-tick timers, so a week or a month
+// of "trading" completes instantly); runBacktestOnRealCandles() and
+// runBacktestOnRealBasket() further down run the SAME rules the live
+// engine (simulation.ts) actually trades with against real historical
+// Kraken closes instead.
 //
 // This is entirely separate from swarmEngine's state: running a backtest
 // never reads or writes your live session's equity, positions, or trade
 // log. It shares only the tuning constants in ./tuning, so a parameter
-// change is tested identically in both places.
+// change is tested identically everywhere.
 //
 // The live engine's agent "mood" comes from a visual status state machine
 // (STANDBY/SCANNING/EXECUTING/GUARDING) that governs how often each agent
@@ -16,8 +17,6 @@
 // flat probabilities calibrated to match that state machine's long-run
 // average — see the comments at ENTRY_ATTEMPT_CHANCE and RISK_FLAG_CHANCE.
 
-import { TICKER_SYMBOLS } from './lib/agents'
-import type { RealCandle } from './lib/historicalData'
 import { choice, clamp, diffs, mean, randNormal, randRange, stdDev } from './lib/math'
 import {
   AGENT_BETA,
@@ -107,12 +106,17 @@ export interface BacktestResult {
   symbol?: string
 }
 
+// Arbitrary synthetic tickers — not tied to any real roster. This mode is a
+// fast, no-network sanity check for the rule constants themselves, never
+// shown as "what's trading" anywhere in the UI.
+const SYNTHETIC_ASSET_COUNT = 8
+
 export function runBacktest(virtualHours: number): BacktestResult {
   const hours = clamp(virtualHours, 1, MAX_VIRTUAL_HOURS)
   const ticks = Math.min(MAX_TICKS, Math.round(hours * TICKS_PER_VIRTUAL_HOUR))
 
-  const tickers: BtTicker[] = TICKER_SYMBOLS.map((symbol, i) => ({
-    symbol,
+  const tickers: BtTicker[] = Array.from({ length: SYNTHETIC_ASSET_COUNT }, (_, i) => ({
+    symbol: `SYN-${i + 1}`,
     basePrice: randRange(0.000002, 1.4) * (i % 3 === 0 ? 100 : 1),
     pct: randRange(-8, 8),
     beta: randRange(0.4, 1.1),
@@ -148,11 +152,11 @@ export function runBacktest(virtualHours: number): BacktestResult {
   let killSwitchBlocks = 0
 
   const priceFor = (t: BtTicker) => t.basePrice * (1 + t.pct / 100)
-  // Base spread/depth slippage plus a market-impact term: a meme-coin pool
+  // Base spread/depth slippage plus a market-impact term: a thin order book
   // has finite real depth, so a position sized large relative to that depth
   // eats real impact cost on the way in and out. Without this term, sizing
   // a fixed % of equity every trade compounds without limit — no real book
-  // fills an ever-larger dollar amount into the same shallow pool at the
+  // fills an ever-larger dollar amount into the same shallow depth at the
   // same cost, which is exactly what let early tuning runs "backtest" into
   // literal quadrillion-percent returns.
   const slippageFor = (notional: number) =>
@@ -182,15 +186,15 @@ export function runBacktest(virtualHours: number): BacktestResult {
     marketFactor = clamp(marketFactor + randNormal() * 0.03 - marketFactor * 0.06, -1, 1)
 
     for (const t of tickers) {
-      // Real meme-coin moves have short-run autocorrelation — a pump tends
-      // to keep pumping for a while, a dump keeps dumping — on top of pure
-      // noise and macro beta. An earlier version of this model reverted
-      // ~45% of any extension within a single simulated hour, which made
-      // chasing the biggest recent mover a coin flip against itself and
-      // silently rewarded contrarian entries that don't hold up on real
-      // data. This version keeps some short-term persistence and only a
-      // soft multi-day fade, closer to how a real meme coin actually decays
-      // off a spike.
+      // Real volatile-asset moves have short-run autocorrelation — a pump
+      // tends to keep pumping for a while, a dump keeps dumping — on top of
+      // pure noise and macro beta. An earlier version of this model
+      // reverted ~45% of any extension within a single simulated hour,
+      // which made chasing the biggest recent mover a coin flip against
+      // itself and silently rewarded contrarian entries that don't hold up
+      // on real data. This version keeps some short-term persistence and
+      // only a soft multi-day fade, closer to how a real spike actually
+      // decays.
       const shock = t.beta * marketFactor * 0.6 + randNormal() * 0.5
       t.momentum = clamp(t.momentum * 0.93 + shock * 0.12, -3, 3)
       const move = shock + t.momentum
@@ -328,8 +332,8 @@ export function runBacktest(virtualHours: number): BacktestResult {
 // through the tuned-and-validated synthetic path above.
 //
 // Important honesty caveat: only the PRICE series is real. There is no
-// historical feed for SCOUT/SENTIMENT/WHALE-WATCH's actual on-chain/social
-// signals, so those three are approximated here as a shared momentum proxy
+// historical feed for SCOUT/SENTIMENT/WHALE-WATCH's actual market signals,
+// so those three are approximated here as a shared momentum proxy
 // derived from the real returns themselves (a burst of real upward
 // momentum reads as a positive composite signal). That is a reasonable
 // stand-in, not a replay of what those agents would really have seen — this
@@ -354,18 +358,19 @@ export function runBacktest(virtualHours: number): BacktestResult {
 //    calibration — which let the entry gate fire on much weaker conviction
 //    than intended and diluted the edge with lower-quality entries.)
 // 2. STOP_LOSS_PCT/TRAIL_ARM_PCT/MOONSHOT_SAFETY_MULT (tuning.ts) are fixed
-//    percentages calibrated against the synthetic engine's meme-coin-scale
-//    moves. Real assets span a much wider range (BTC's daily moves are a
-//    fraction of a meme coin's) — a fixed 5% stop is tight enough to matter
-//    for BTC but loose enough to rarely matter for a genuinely volatile
-//    micro-cap. Real-data mode instead sizes each position's exits off the
-//    volatility actually observed at entry (an ATR-style stop), so the same
-//    "how many standard deviations of adverse move before this trade is
-//    wrong" logic applies whether the asset picked is BTC or a meme coin.
+//    percentages calibrated against the synthetic engine's scale of moves.
+//    The real tracked roster (Kraken's full USD/USDT universe) spans a much
+//    wider range — BTC's daily moves are a fraction of a thin microcap's —
+//    so a fixed 5% stop is tight enough to matter for BTC but loose enough
+//    to rarely matter for a genuinely volatile microcap. Real-data mode
+//    instead sizes each position's exits off the volatility actually
+//    observed at entry (an ATR-style stop), so the same "how many standard
+//    deviations of adverse move before this trade is wrong" logic applies
+//    regardless of which asset was picked.
 // (Real-asset exit/entry calibration lives in tuning.ts now — REAL_VOL_*,
 // REAL_*_CHANCE_PER_HOUR, REAL_STOP_*/REAL_TRAIL_*/REAL_MOONSHOT_*,
-// REAL_TREND_* — shared with krakenEngine.ts's live paper-trading loop so
-// both drive off the identical, already-validated calibration.)
+// REAL_TREND_* — shared with simulation.ts's live engine so both drive off
+// the identical, already-validated calibration.)
 
 interface RealPosition extends BtPosition {
   entryVol: number
@@ -569,21 +574,18 @@ export function runBacktestOnRealCandles(
 
 // --- LIVE RULES on a REAL multi-asset basket ----------------------------
 //
-// Tests the EXACT rule set the live meme-coin engine (simulation.ts) and
-// runBacktest's synthetic mode above actually trade with — fixed
-// STOP_LOSS_PCT/TRAIL_ARM_PCT/TRAIL_GIVEBACK_PCT/MOONSHOT_SAFETY_MULT,
-// unbiased entry pick across several real assets at once, no trend-
-// confirmation gate (the live engine doesn't have one either) — against
-// real historical closes instead of a synthetic walk. Deliberately does
-// NOT reuse runBacktestOnRealCandles's ATR-scaled REAL_* thresholds: those
-// validate a DIFFERENT rule set, calibrated for majors like BTC, not the
-// one actually running live. Real-time calibration (entry-attempt/risk-
-// flag chance, session length) still comes from the REAL_*_PER_HOUR
-// constants — those are genuinely about wall-clock timing, not about
-// which asset class the exit-sizing math assumes.
+// Tests the EXACT rule set the live engine (simulation.ts) actually trades
+// with — ATR-scaled REAL_* exits, trend-confirmed unbiased entry pick
+// across several real assets at once — against real historical closes for
+// several assets simultaneously instead of runBacktestOnRealCandles's one
+// asset at a time. Structurally the multi-asset counterpart of
+// runBacktestOnRealCandles: same per-position math, same trend gate, just
+// tracking a basket (mirroring how the live engine holds up to
+// MAX_POSITIONS across its whole discovered Kraken roster at once) instead
+// of a single position.
 export interface RealBasketAsset {
   label: string
-  candles: RealCandle[]
+  candles: { time: number; close: number }[]
 }
 
 interface BasketPosition {
@@ -592,6 +594,7 @@ interface BasketPosition {
   peakPrice: number
   units: number
   notional: number
+  entryVol: number
 }
 
 export function runBacktestOnRealBasket(assets: RealBasketAsset[], msPerCandle: number): BacktestResult {
@@ -627,6 +630,7 @@ export function runBacktestOnRealBasket(assets: RealBasketAsset[], msPerCandle: 
     const window = returnsBySymbol[label].slice(Math.max(0, i - REAL_VOL_WINDOW), i)
     return window.length >= 5 ? stdDev(window) || REAL_VOL_FLOOR : REAL_VOL_FLOOR
   }
+  const trendUpStreaks: Record<string, number> = Object.fromEntries(labels.map((l) => [l, 0]))
 
   let marketFactor = 0
   let scoutVal = 0
@@ -678,9 +682,15 @@ export function runBacktestOnRealBasket(assets: RealBasketAsset[], msPerCandle: 
     }
 
     const priceAt = (label: string) => closesBySymbol[label][i + 1]
+    const volAt: Record<string, number> = {}
 
     const zScores = labels.map((label) => {
       const vol = rollingStd(label, i)
+      volAt[label] = vol
+      const fastMa = movingAverage(closesBySymbol[label], i, REAL_TREND_FAST_WINDOW)
+      const slowMa = movingAverage(closesBySymbol[label], i, REAL_TREND_SLOW_WINDOW)
+      const price = priceAt(label)
+      trendUpStreaks[label] = price > fastMa && fastMa > slowMa ? trendUpStreaks[label] + 1 : 0
       return clamp(returnsBySymbol[label][i] / vol, -5, 5)
     })
     const zAvg = mean(zScores)
@@ -707,16 +717,26 @@ export function runBacktestOnRealBasket(assets: RealBasketAsset[], msPerCandle: 
       recordFill((exitPrice - closed.entryPrice) * closed.units)
     }
 
-    // EXIT: stop-loss / moonshot cap / trailing stop — the SAME fixed
-    // thresholds the live meme-coin engine actually trades with.
+    // EXIT: stop-loss / moonshot cap / trailing stop, all sized off the
+    // volatility observed when THIS position was opened — the same
+    // ATR-scaled REAL_* math the live engine actually trades with (see
+    // simulation.ts's tickPositions()).
     for (let idx = positions.length - 1; idx >= 0; idx--) {
       const p = positions[idx]
       const price = priceAt(p.token)
       p.peakPrice = Math.max(p.peakPrice, price)
+      const stopPct = clamp(p.entryVol * REAL_STOP_LOSS_VOL_MULT, REAL_STOP_LOSS_MIN_PCT, REAL_STOP_LOSS_MAX_PCT)
+      const trailArmPct = clamp(p.entryVol * REAL_TRAIL_ARM_VOL_MULT, REAL_TRAIL_ARM_MIN_PCT, REAL_TRAIL_ARM_MAX_PCT)
+      const trailGivebackPct = clamp(
+        p.entryVol * REAL_TRAIL_GIVEBACK_VOL_MULT,
+        REAL_TRAIL_GIVEBACK_MIN_PCT,
+        REAL_TRAIL_GIVEBACK_MAX_PCT,
+      )
+      const moonshotMult = 1 + clamp(p.entryVol * REAL_MOONSHOT_VOL_MULT, REAL_MOONSHOT_MIN_GAIN, REAL_MOONSHOT_MAX_GAIN)
       const shouldClose =
-        price <= p.entryPrice * (1 - STOP_LOSS_PCT) ||
-        price >= p.entryPrice * MOONSHOT_SAFETY_MULT ||
-        (price > p.entryPrice * (1 + TRAIL_ARM_PCT) && price <= p.peakPrice * (1 - TRAIL_GIVEBACK_PCT))
+        price <= p.entryPrice * (1 - stopPct) ||
+        price >= p.entryPrice * moonshotMult ||
+        (price > p.entryPrice * (1 + trailArmPct) && price <= p.peakPrice * (1 - trailGivebackPct))
       if (shouldClose) {
         const exitPrice = price * (1 - slippageFor(p.units * price))
         recordFill((exitPrice - p.entryPrice) * p.units)
@@ -724,10 +744,10 @@ export function runBacktestOnRealBasket(assets: RealBasketAsset[], msPerCandle: 
       }
     }
 
-    // SNIPER: same regime gate, signal gate, conviction sizing, risk veto
-    // and session containment as the live engine and the synthetic
-    // backtest — an unbiased pick among currently-held-free basket assets,
-    // never the biggest mover (see runBacktest's module comment on why).
+    // SNIPER: same regime gate, signal gate, conviction sizing, risk veto,
+    // session containment AND trend-confirmation gate as the live engine —
+    // an unbiased pick among currently-held-free, trend-confirmed basket
+    // assets, never the biggest mover (see runBacktest's module comment).
     if (positions.length < MAX_POSITIONS && Math.random() < entryChancePerCandle && marketFactor > ENTRY_REGIME_THRESHOLD) {
       const killSwitchActive = equity <= sessionStartEquity * (1 - MAX_SESSION_DRAWDOWN_PCT / 100)
       if (killSwitchActive) {
@@ -738,14 +758,21 @@ export function runBacktestOnRealBasket(assets: RealBasketAsset[], msPerCandle: 
         const signal = (scoutVal + sentimentVal + whaleVal) / 3
         if (signal > MIN_SIGNAL_THRESHOLD) {
           const held = new Set(positions.map((p) => p.token))
-          const candidates = labels.filter((l) => !held.has(l))
+          const candidates = labels.filter((l) => !held.has(l) && trendUpStreaks[l] >= REAL_TREND_MIN_STREAK)
           if (candidates.length > 0) {
             const label = choice(candidates)
             const price = priceAt(label)
             const sizeFrac = clamp(0.03 + signal * 0.006, 0.015, 0.12)
             const notional = equity * sizeFrac
             const entryPrice = price * (1 + slippageFor(notional))
-            positions.push({ token: label, entryPrice, peakPrice: entryPrice, units: notional / entryPrice, notional })
+            positions.push({
+              token: label,
+              entryPrice,
+              peakPrice: entryPrice,
+              units: notional / entryPrice,
+              notional,
+              entryVol: volAt[label],
+            })
             fills += 1
             sessionEntries += 1
           }
