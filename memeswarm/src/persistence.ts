@@ -4,12 +4,22 @@
 // nothing is shared between browsers or devices.
 
 import type { Candle, LogEntry } from './types'
+import { SEED_EQUITY } from './tuning'
 
-// Renamed from the memeswarm:v2 key when the app was rebranded to PACKHUNT —
-// old saved state under the previous name is intentionally not migrated.
-// Bump this again for any future change that would make previously-saved
-// data misleading rather than just stale.
-const STORAGE_KEY = 'packhunt:v1'
+// v1 -> v2: the meme-coin engine (fixed % exits, Dexscreener prices) was
+// replaced with the Kraken-driven ATR engine — old saved equity/positions
+// are from a different rule set entirely and would be actively misleading
+// carried forward, not just stale. Bump this again for any future change
+// with the same property.
+const STORAGE_KEY = 'packhunt:v2'
+
+// A session running for a long time (or one that lived through an earlier,
+// buggy build) could in principle save a corrupted or wildly runaway
+// number — nothing about localStorage guarantees it stays sane. This is a
+// trust boundary (arbitrary prior state from this browser, not something
+// this run computed), so a value outside any plausible real range is
+// rejected outright rather than silently carried forward forever.
+const MAX_PLAUSIBLE_EQUITY = SEED_EQUITY * 10_000
 
 export interface PersistedPosition {
   id: string
@@ -48,6 +58,7 @@ export function loadPersistedState(): PersistedState | null {
     if (!raw) return null
     const data = JSON.parse(raw) as Partial<PersistedState>
     if (data.v !== 1 || !Array.isArray(data.candles) || data.candles.length === 0) return null
+    if (!Number.isFinite(data.equity) || data.equity! <= 0 || data.equity! > MAX_PLAUSIBLE_EQUITY) return null
     return data as PersistedState
   } catch {
     return null // private browsing, corrupted data, or storage disabled — just start fresh
