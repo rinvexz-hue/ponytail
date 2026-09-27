@@ -74,7 +74,8 @@ export const AGENT_META: Record<AgentId, AgentMeta> = {
 // actually does, separate from the others, in plain language.
 export const AGENT_DESCRIPTIONS: Record<AgentId, string> = {
   scout: "Scans Kraken's full listings for fresh volume, tightening spreads, and new trading opportunities.",
-  sniper: 'Fires the entry trade once SCOUT, SENTIMENT and WHALE-WATCH agree the setup is worth it.',
+  sniper:
+    'Fires the entry trade once SCOUT, SENTIMENT and WHALE-WATCH agree the setup is worth it, and the candidate\'s own RSI and MACD confirm real, healthy momentum — not already overbought, not fading.',
   sentiment: 'Tracks the shared market regime and momentum across the whole tracked roster.',
   whalewatch: 'Watches order-book flow for accumulation or exit patterns that hint at where price is headed.',
   liquidity: 'Monitors order-book depth and sizes trades to avoid excessive slippage on thin books.',

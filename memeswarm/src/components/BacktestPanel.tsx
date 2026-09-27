@@ -137,8 +137,9 @@ export function BacktestPanel() {
         <p className="mb-3 font-mono text-[10px] leading-snug text-slate-600">
           {mode === 'basket' ? (
             <>
-              Runs the EXACT live rule set (ATR-scaled stop/trail/take-profit, trend-confirmed entry pick across
-              several assets at once) against real historical Kraken closes for {basketCount} of Kraken's{' '}
+              Runs the EXACT live rule set (ATR-scaled stop/trail/take-profit, entry requires a confirmed MA trend
+              AND real RSI/MACD momentum, picked across several assets at once) against real historical Kraken
+              closes for {basketCount} of Kraken's{' '}
               {krakenAssets ? krakenAssets.length.toLocaleString() : '…'} discovered USD/USDT pairs. Only the PRICE
               series is real; SCOUT/SENTIMENT/WHALE-WATCH are approximated from real price momentum. This is the
               mode that validates what's actually trading live.

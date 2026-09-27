@@ -109,6 +109,23 @@ export const REAL_TREND_FAST_WINDOW = 8
 export const REAL_TREND_SLOW_WINDOW = 35
 export const REAL_TREND_MIN_STREAK = 2
 
+// Real-indicator entry filter (on top of both gates above): standard RSI(14)
+// and MACD(12,26,9), computed from the same real closes each tracked asset
+// already accumulates. RSI must sit in a "confirmed momentum, not yet
+// overbought" zone — below RSI_MIN there's no real momentum behind the
+// trend-gate's MA cross yet, above RSI_MAX the move is already extended and
+// more likely to be bought into a local top. MACD histogram must be
+// positive — bullish momentum confirmed, not just a stale crossover.
+// Standard textbook defaults, not grid-searched against real history the
+// way ENTRY_REGIME_THRESHOLD was (see the note above) — tighten via the
+// BASKET backtest if live results say otherwise.
+export const RSI_PERIOD = 14
+export const RSI_MIN = 40
+export const RSI_MAX = 70
+export const MACD_FAST_PERIOD = 12
+export const MACD_SLOW_PERIOD = 26
+export const MACD_SIGNAL_PERIOD = 9
+
 // How strongly each agent's "value" reading reacts to the shared market
 // factor — used both for the live agent sparklines and (for scout/
 // sentiment/whalewatch/liquidity) the backtester's simplified signal proxy.

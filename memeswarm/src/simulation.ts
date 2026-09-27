@@ -35,11 +35,14 @@ import { AGENT_IDS } from './lib/agents'
 import { discoverKrakenAssets, fetchKrakenTicker } from './lib/krakenData'
 import type { KrakenAsset, KrakenTick } from './lib/krakenData'
 import { loadPersistedState, savePersistedState } from './persistence'
-import { clamp, choice, diffs, mean, randNormal, randRange, stdDev, uid } from './lib/math'
+import { clamp, choice, diffs, macdHistogram, mean, randNormal, randRange, rsi, stdDev, uid } from './lib/math'
 import {
   AGENT_BETA,
   ENTRY_REGIME_THRESHOLD,
   LIQUIDITY_DEPTH_USD,
+  MACD_FAST_PERIOD,
+  MACD_SIGNAL_PERIOD,
+  MACD_SLOW_PERIOD,
   MAX_ENTRIES_PER_SESSION,
   MAX_POSITIONS,
   MAX_SESSION_DRAWDOWN_PCT,
@@ -64,6 +67,9 @@ import {
   REAL_VOL_FLOOR,
   REAL_VOL_WINDOW,
   RISK_VETO_CHANCE,
+  RSI_MAX,
+  RSI_MIN,
+  RSI_PERIOD,
   SEED_EQUITY,
   SESSION_LENGTH_HOURS,
 } from './tuning'
@@ -185,9 +191,11 @@ interface EngineTicker {
   basePrice: number
   pct: number
   hasRealData: boolean
-  closes: number[] // rolling price history — vol/trend are computed from this on each Kraken poll
+  closes: number[] // rolling price history — vol/trend/RSI/MACD are computed from this on each Kraken poll
   vol: number
   trendUpStreak: number
+  rsi: number
+  macdHist: number
 }
 
 interface EngineAgent {
@@ -434,6 +442,8 @@ class SwarmEngine {
       closes: [],
       vol: REAL_VOL_FLOOR,
       trendUpStreak: 0,
+      rsi: 50,
+      macdHist: 0,
     }))
 
     this.poll()
@@ -487,6 +497,8 @@ class SwarmEngine {
         const slowMa = mean(t.closes.slice(-REAL_TREND_SLOW_WINDOW))
         t.trendUpStreak = real.price > fastMa && fastMa > slowMa ? t.trendUpStreak + 1 : 0
       }
+      t.rsi = rsi(t.closes, RSI_PERIOD)
+      t.macdHist = macdHistogram(t.closes, MACD_FAST_PERIOD, MACD_SLOW_PERIOD, MACD_SIGNAL_PERIOD)
     }
 
     if (zScores.length > 0) {
@@ -718,7 +730,14 @@ class SwarmEngine {
     }
 
     const heldTokens = new Set(this.openPositions.map((p) => p.token))
-    const candidates = tradeable.filter((t) => !heldTokens.has(t.symbol) && t.trendUpStreak >= REAL_TREND_MIN_STREAK)
+    const candidates = tradeable.filter(
+      (t) =>
+        !heldTokens.has(t.symbol) &&
+        t.trendUpStreak >= REAL_TREND_MIN_STREAK &&
+        t.rsi >= RSI_MIN &&
+        t.rsi <= RSI_MAX &&
+        t.macdHist > 0,
+    )
     if (candidates.length === 0) return false
 
     // An unbiased pick among trend-confirmed candidates, never the biggest

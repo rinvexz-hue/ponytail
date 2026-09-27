@@ -17,11 +17,14 @@
 // flat probabilities calibrated to match that state machine's long-run
 // average — see the comments at ENTRY_ATTEMPT_CHANCE and RISK_FLAG_CHANCE.
 
-import { choice, clamp, diffs, mean, randNormal, randRange, stdDev } from './lib/math'
+import { choice, clamp, diffs, macdHistogram, mean, randNormal, randRange, rsi, stdDev } from './lib/math'
 import {
   AGENT_BETA,
   ENTRY_REGIME_THRESHOLD,
   LIQUIDITY_DEPTH_USD,
+  MACD_FAST_PERIOD,
+  MACD_SIGNAL_PERIOD,
+  MACD_SLOW_PERIOD,
   MAX_ENTRIES_PER_SESSION,
   MAX_POSITIONS,
   MAX_SESSION_DRAWDOWN_PCT,
@@ -47,6 +50,9 @@ import {
   REAL_VOL_FLOOR,
   REAL_VOL_WINDOW,
   RISK_VETO_CHANCE,
+  RSI_MAX,
+  RSI_MIN,
+  RSI_PERIOD,
   SEED_EQUITY,
   SESSION_LENGTH_HOURS,
   STOP_LOSS_PCT,
@@ -474,6 +480,12 @@ export function runBacktestOnRealCandles(
     const slowMa = movingAverage(closes, i, REAL_TREND_SLOW_WINDOW)
     trendUpStreak = price > fastMa && fastMa > slowMa ? trendUpStreak + 1 : 0
 
+    // Bounded recent window (not the whole history) — see macdHistogram's
+    // own comment on why an unbounded caller would make this expensive.
+    const recentCloses = closes.slice(Math.max(0, i + 1 - 60), i + 1)
+    const rsiNow = rsi(recentCloses, RSI_PERIOD)
+    const macdHistNow = macdHistogram(recentCloses, MACD_FAST_PERIOD, MACD_SLOW_PERIOD, MACD_SIGNAL_PERIOD)
+
     scoutVal = clamp(scoutVal + AGENT_BETA.scout * marketFactor * 0.8 + z * 0.7 - scoutVal * 0.05, -40, 40)
     sentimentVal = clamp(sentimentVal + AGENT_BETA.sentiment * marketFactor * 0.8 + z * 0.7 - sentimentVal * 0.05, -40, 40)
     whaleVal = clamp(whaleVal + AGENT_BETA.whalewatch * marketFactor * 0.8 + z * 0.7 - whaleVal * 0.05, -40, 40)
@@ -511,12 +523,16 @@ export function runBacktestOnRealCandles(
     }
 
     // SNIPER: same regime gate, signal gate, conviction sizing and risk veto,
-    // plus the trend-confirmation gate above (see module comment).
+    // plus the trend-confirmation gate and the RSI/MACD real-indicator
+    // filter above (see module comment / tuning.ts).
     if (
       !position &&
       Math.random() < entryChancePerCandle &&
       marketFactor > ENTRY_REGIME_THRESHOLD &&
-      trendUpStreak >= REAL_TREND_MIN_STREAK
+      trendUpStreak >= REAL_TREND_MIN_STREAK &&
+      rsiNow >= RSI_MIN &&
+      rsiNow <= RSI_MAX &&
+      macdHistNow > 0
     ) {
       const killSwitchActive = equity <= sessionStartEquity * (1 - MAX_SESSION_DRAWDOWN_PCT / 100)
       if (killSwitchActive) {
@@ -683,6 +699,8 @@ export function runBacktestOnRealBasket(assets: RealBasketAsset[], msPerCandle: 
 
     const priceAt = (label: string) => closesBySymbol[label][i + 1]
     const volAt: Record<string, number> = {}
+    const rsiAt: Record<string, number> = {}
+    const macdHistAt: Record<string, number> = {}
 
     const zScores = labels.map((label) => {
       const vol = rollingStd(label, i)
@@ -691,6 +709,10 @@ export function runBacktestOnRealBasket(assets: RealBasketAsset[], msPerCandle: 
       const slowMa = movingAverage(closesBySymbol[label], i, REAL_TREND_SLOW_WINDOW)
       const price = priceAt(label)
       trendUpStreaks[label] = price > fastMa && fastMa > slowMa ? trendUpStreaks[label] + 1 : 0
+      // Bounded recent window — see macdHistogram's own comment.
+      const recentCloses = closesBySymbol[label].slice(Math.max(0, i + 1 - 60), i + 1)
+      rsiAt[label] = rsi(recentCloses, RSI_PERIOD)
+      macdHistAt[label] = macdHistogram(recentCloses, MACD_FAST_PERIOD, MACD_SLOW_PERIOD, MACD_SIGNAL_PERIOD)
       return clamp(returnsBySymbol[label][i] / vol, -5, 5)
     })
     const zAvg = mean(zScores)
@@ -758,7 +780,14 @@ export function runBacktestOnRealBasket(assets: RealBasketAsset[], msPerCandle: 
         const signal = (scoutVal + sentimentVal + whaleVal) / 3
         if (signal > MIN_SIGNAL_THRESHOLD) {
           const held = new Set(positions.map((p) => p.token))
-          const candidates = labels.filter((l) => !held.has(l) && trendUpStreaks[l] >= REAL_TREND_MIN_STREAK)
+          const candidates = labels.filter(
+            (l) =>
+              !held.has(l) &&
+              trendUpStreaks[l] >= REAL_TREND_MIN_STREAK &&
+              rsiAt[l] >= RSI_MIN &&
+              rsiAt[l] <= RSI_MAX &&
+              macdHistAt[l] > 0,
+          )
           if (candidates.length > 0) {
             const label = choice(candidates)
             const price = priceAt(label)
