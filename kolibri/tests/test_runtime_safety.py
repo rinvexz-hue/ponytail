@@ -66,7 +66,7 @@ def test_alerts_rate_limit_dedupe_and_critical_repeat(cfg: Config) -> None:
     assert any("kill" in s for s in sent)  # CRITICAL is never rate-limited away
     n = len(sent)
     asyncio.run(am.flush(now=1000.0 + cfg.alerts.critical_repeat_s))
-    assert len(sent) == n + 1 and "unacked" in sent[-1]  # repeats until acknowledged
+    assert len(sent) == n + 1 and "nog niet bevestigd" in sent[-1]  # repeats until acknowledged
     assert am.ack() == 1
     asyncio.run(am.flush(now=1000.0 + 5 * cfg.alerts.critical_repeat_s))
     assert len(sent) == n + 1
@@ -74,7 +74,7 @@ def test_alerts_rate_limit_dedupe_and_critical_repeat(cfg: Config) -> None:
 
 def test_event_formatting(cfg: Config) -> None:
     kill = format_event(DeskEvent("kill", T0, data={"reason": "stale", "manual_rearm": True}), cfg)
-    assert kill is not None and kill.severity == "CRITICAL" and "manual re-arm" in kill.text
+    assert kill is not None and kill.severity == "CRITICAL" and "handmatig hervatten" in kill.text
     trade = format_event(DeskEvent("trade", T0, "BTCUSDT", {"trade": {"r": "1.5", "pnl": "10", "exit_reason": "tp1"}}),
                          cfg)
     assert trade is not None and "+1.50R" in trade.text

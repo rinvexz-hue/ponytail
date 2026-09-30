@@ -32,27 +32,36 @@ class Alert:
     ts: float
 
 
+SETUP_NL = {"A_pullback": "Trend-terugval", "B_meanrev": "Terug naar gemiddelde", "C_breakout": "Uitbraak",
+            "D_sweep": "Stop-jacht omkering", "orphan": "Onbekende positie"}
+EXIT_NL = {"stop": "stop-loss geraakt", "trail": "meeschuivende stop", "tp1": "winstdoel", "tp2": "eindwinstdoel",
+           "time_stop": "tijdslimiet (10 min)", "exit": "handmatig gesloten", "orphan": "onbekende positie gesloten"}
+
+
 def format_event(ev: DeskEvent, cfg: Config) -> Alert | None:
     d, now = ev.data, time.time()
     if ev.kind == "position_open":
-        return Alert("INFO", f"🟢 ENTRY {ev.symbol} {d['direction']} [{d['setup']}]", now)
+        side = "long (koop)" if d["direction"] == "long" else "short"
+        return Alert("INFO", f"🟢 Positie geopend {ev.symbol} {side} · {SETUP_NL.get(d['setup'], d['setup'])}", now)
     if ev.kind == "trade":
         t = d["trade"]
         r = float(t["r"])
-        return Alert("INFO", f"{'✅' if r > 0 else '🔻'} EXIT {ev.symbol} {t['exit_reason']} {r:+.2f}R "
-                             f"pnl {float(t['pnl']):+.2f}", now)
+        why = EXIT_NL.get(str(t["exit_reason"]), str(t["exit_reason"]))
+        return Alert("INFO", f"{'✅' if r > 0 else '🔻'} Positie gesloten {ev.symbol} · {why} · {r:+.2f}R "
+                             f"({float(t['pnl']):+.2f} USDT)", now)
     if ev.kind == "kill":
-        return Alert("CRITICAL", f"🛑 KILL SWITCH: {d['reason']} (flattened, halted"
-                                 f"{', manual re-arm needed' if d.get('manual_rearm') else ''})", now)
+        return Alert("CRITICAL", f"🛑 NOODSTOP: {d['reason']} — alles gesloten, handel gestopt"
+                                 f"{'; handmatig hervatten nodig' if d.get('manual_rearm') else ''}", now)
     if ev.kind == "risk":
-        return Alert("WARN", f"⚠️ RISK {ev.symbol} {d.get('event')}", now)
+        return Alert("WARN", f"⚠️ Risico-melding {ev.symbol} {d.get('event')}", now)
     if ev.kind == "order_reject":
-        return Alert("WARN", f"⚠️ order rejected {ev.symbol} {d['purpose']}: {d['reason']}", now) \
+        return Alert("WARN", f"⚠️ Order geweigerd door beurs {ev.symbol} ({d['purpose']}): {d['reason']}", now) \
             if d["reason"] != "post_only_would_take" else None
     if ev.kind == "rejection" and cfg.alerts.send_rejected_high_score:
         sc = d.get("score")
         if sc is not None and sc >= cfg.alerts.rejected_score_alert:
-            return Alert("INFO", f"· high-score signal rejected {ev.symbol} {d['setup']} {sc:.0f} by {d['gate']}", now)
+            text = f"· Sterk signaal afgewezen {ev.symbol} {d['setup']} (score {sc:.0f}) door {d['gate']}"
+            return Alert("INFO", text, now)
     if ev.kind == "alert":
         return Alert(str(d.get("severity", "INFO")), str(d["text"]), now)
     return None
@@ -123,7 +132,7 @@ class AlertManager:
         if self.unacked and now - self._last_repeat >= self.cfg.alerts.critical_repeat_s:
             self._last_repeat = now
             for a in self.unacked.values():
-                await self.send(f"[CRITICAL][unacked, /ack to silence] {a.text}")
+                await self.send(f"[KRITIEK][nog niet bevestigd, stuur /ack] {a.text}")
 
     async def poll_ack(self) -> None:
         """Watch Telegram for /ack from the configured chat. Runs forever."""
@@ -146,7 +155,7 @@ class AlertManager:
                     assert isinstance(chat, dict)
                     if str(chat.get("id")) == self.chat and str(msg.get("text", "")).strip() == "/ack":
                         n = self.ack()
-                        await self.send(f"acknowledged {n} critical alert(s)")
+                        await self.send(f"{n} kritieke melding(en) bevestigd")
             except Exception as e:
                 log.warning("telegram poll failed: %s", type(e).__name__)
                 await asyncio.sleep(5)

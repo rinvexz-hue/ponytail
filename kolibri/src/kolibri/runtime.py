@@ -76,6 +76,7 @@ class Runtime:
         # dashboard). Live adapter calls await the network, and without it two tasks could interleave
         # inside the Executioner (e.g. place two stops). Ceiling: a slow REST call delays tick handling.
         self.lock = asyncio.Lock()
+        self.server: Any = None
         self.started_ms = now_ms()
 
     # ---- market callbacks --------------------------------------------------------------------
@@ -174,8 +175,9 @@ class Runtime:
             if now - last_hb >= self.cfg.alerts.heartbeat_min * MINUTE_MS:
                 last_hb = now
                 s = self.snapshot()
-                self.alerts.push(Alert("INFO", f"💓 {self.cfg.mode} equity {s['equity']:.2f} open {len(s['positions'])}"
-                                               f" halted={s['halted'] or 'no'}", now / 1000))
+                self.alerts.push(Alert("INFO", f"💓 Hartslag ({self.cfg.mode}): vermogen {s['equity']:.2f} USDT, "
+                                               f"{len(s['positions'])} open positie(s), "
+                                               f"{'GESTOPT: ' + s['halted'] if s['halted'] else 'actief'}", now / 1000))
             if now // DAY_MS != day:
                 self.alerts.push(Alert("INFO", daily_report(self.j, day * DAY_MS), now / 1000))
                 day = now // DAY_MS
@@ -221,7 +223,7 @@ class Runtime:
         self.tasks = [asyncio.create_task(c) for c in coros]
         for t in self.tasks:
             t.add_done_callback(self._task_died)
-        self.j.emit("alert", now_ms(), severity="INFO", text=f"KOLIBRI started in {self.cfg.mode} mode")
+        self.j.emit("alert", now_ms(), severity="INFO", text=f"KOLIBRI gestart in {self.cfg.mode}-modus")
 
     def _task_died(self, t: asyncio.Task[None]) -> None:
         if t.cancelled() or self.stopping.is_set():
@@ -239,6 +241,7 @@ class Runtime:
         host = os.environ.get("DASHBOARD_HOST", self.cfg.dashboard.host)  # 0.0.0.0 only inside docker
         server = uvicorn.Server(uvicorn.Config(create_app(self), host=host,
                                                port=self.cfg.dashboard.port, log_level="warning"))
+        self.server = server
         await server.serve()
 
     async def shutdown(self) -> None:
@@ -253,8 +256,13 @@ class Runtime:
                     break
             if self.desk.exe.positions:
                 log.critical("shutdown with open positions; exchange-side stops remain in place")
+        if self.server is not None:
+            self.server.should_exit = True  # uvicorn stops cleanly; cancelling it mid-serve can hang
         for t in self.tasks:
-            t.cancel()
+            if self.server is None or t.get_coro().__name__ != "serve_dashboard":  # type: ignore[union-attr]
+                t.cancel()
+        if self.tasks:
+            await asyncio.wait(self.tasks, timeout=10)
         with contextlib.suppress(Exception):
             await self.alerts.flush()
         if self.exchange is not None:
@@ -304,4 +312,12 @@ class Runtime:
             "late_trades": self.builder.late,
             "alerts": [{"sev": a.severity, "text": a.text, "ts": a.ts} for a in list(self.alerts.recent)[-20:]],
             "unacked": len(self.alerts.unacked),
+            "limits": {  # shown next to the numbers they bound, straight from config
+                "daily_loss_pct": float(self.cfg.risk.daily_loss_pct),
+                "max_drawdown_pct": float(self.cfg.risk.max_drawdown_pct),
+                "max_trades_per_day": self.cfg.risk.max_trades_per_day,
+                "max_clock_drift_ms": self.cfg.kill.max_clock_drift_ms,
+                "risk_per_trade_pct": float(self.cfg.risk.risk_per_trade_pct),
+                "max_positions": self.cfg.risk.max_positions,
+            },
         }
