@@ -1,2 +1,0 @@
-[console_scripts]
-kolibri = kolibri.__main__:main
