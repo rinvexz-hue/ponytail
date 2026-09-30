@@ -167,3 +167,10 @@ def test_live_mode_refuses_without_every_condition(cfg: Config, tmp_path: Path,
     monkeypatch.setenv("LIVE_CONFIRM", "yes")
     with pytest.raises(LiveRefused):
         assert_mode_allowed(live)
+
+
+def test_touch_falls_back_to_bar_close_before_first_print(cfg: Config) -> None:
+    desk = Desk(cfg, SimBroker(cfg, D("1000")), Journal(), D("1000"))
+    from kolibri.core.models import Direction
+
+    assert desk._touch("XRPUSDT", Direction.LONG, D("0.5000")) == D("0.4999")

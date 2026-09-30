@@ -11,6 +11,8 @@ from typing import Any
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import HTMLResponse
 
+from kolibri.scout.scout import now_ms
+
 INDEX = (Path(__file__).parent / "index.html").read_text()
 
 
@@ -28,9 +30,8 @@ def create_app(rt: Any) -> FastAPI:
     def index() -> str:
         return INDEX
 
-    # every handler is async: it runs on the event-loop thread that owns the SQLite journal
     @app.get("/api/state", dependencies=[Depends(auth)])
-    async def state() -> dict[str, Any]:
+    def state() -> dict[str, Any]:
         snap: dict[str, Any] = rt.snapshot()
         return snap
 
@@ -45,12 +46,12 @@ def create_app(rt: Any) -> FastAPI:
         return {"ok": "flatten sent"}
 
     @app.post("/api/rearm", dependencies=[Depends(auth)])
-    async def rearm() -> dict[str, str]:
-        await rt.rearm()
+    def rearm() -> dict[str, str]:
+        rt.desk.risk.rearm(now_ms())
         return {"ok": "re-armed"}
 
     @app.post("/api/ack", dependencies=[Depends(auth)])
-    async def ack() -> dict[str, int]:
+    def ack() -> dict[str, int]:
         return {"acked": rt.alerts.ack()}
 
     return app

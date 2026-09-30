@@ -10,8 +10,7 @@ from decimal import Decimal as D
 from conftest import T0, Harness, cheap, intent
 
 from kolibri.core.config import Config, with_overrides
-from kolibri.core.models import OrderType
-from kolibri.core.models import OrderStatus
+from kolibri.core.models import OrderStatus, OrderType
 from kolibri.executioner.executioner import Executioner
 
 S = "BTCUSDT"
@@ -282,7 +281,7 @@ def test_spot_tp_is_synthetic_and_never_oversells(cfg: Config) -> None:
     h.tick(S, T0 + 1500, "101.00")
     resting = [lv.order for lv in h.broker.orders.values() if lv.order.open]
     assert [(o.purpose, o.qty) for o in resting] == [("stop", D("0.5"))]
-    tp_fill = [o for o in h.exe.orders.values() if o.purpose == "tp1"][0]
+    tp_fill = next(o for o in h.exe.orders.values() if o.purpose == "tp1")
     assert tp_fill.type is OrderType.MARKET  # honest cost model: taker, not maker
 
 

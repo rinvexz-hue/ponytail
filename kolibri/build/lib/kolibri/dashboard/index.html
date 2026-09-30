@@ -160,7 +160,7 @@ function render(s) {
   const syms = Object.keys({...s.regimes, ...s.health}).sort();
   $("syms").innerHTML = syms.map(k => { const h = s.health[k] || {}; const g = s.gates[k] || "—";
     return `<tr><td>${esc(k)}</td><td>${esc(s.regimes[k] || "—")}</td>
-      <td><span class="chip ${g.startsWith("open") ? "good" : ["no_setup", "warmup", "—"].includes(g) ? "" : "warning"}">${esc(g)}</span></td>
+      <td><span class="chip ${g.startsWith("open") ? "good" : "warning"}">${esc(g)}</span></td>
       <td><span class="chip ${h.connected ? "good" : "critical"}">${h.connected ? "live" : "down"}</span></td>
       <td>${h.tick_age_s ?? "—"}s</td><td>${h.reconnects ?? 0}</td></tr>`; }).join("");
   $("pos").innerHTML = s.positions.length ? s.positions.map(p => `<tr><td>${esc(p.symbol)}</td><td>${esc(p.direction)}</td><td>${esc(p.setup)}</td>
@@ -186,7 +186,6 @@ async function refresh() {
     const r = await fetch("/api/state", { headers: hdr() });
     if (!r.ok) { $("msg").textContent = "state: " + r.status; return; }
     render(await r.json());
-    if ($("msg").textContent.startsWith("enter") || $("msg").textContent.startsWith("state")) $("msg").textContent = "";
   } catch (e) { $("msg").textContent = "desk unreachable"; }
 }
 refresh(); setInterval(refresh, 2000);

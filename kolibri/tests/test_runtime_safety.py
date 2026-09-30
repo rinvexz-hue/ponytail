@@ -98,17 +98,18 @@ def test_telegram_token_never_logged(monkeypatch: pytest.MonkeyPatch, caplog: py
 class _FakeRt:
     def __init__(self) -> None:
         self.killed: list[str] = []
-        rt = self
-
-        class Desk:
-            async def kill(self, reason: str, ts: int) -> None:
-                rt.killed.append(reason)
 
         class Alerts:
             def ack(self) -> int:
                 return 2
 
-        self.desk, self.alerts = Desk(), Alerts()
+        self.alerts = Alerts()
+
+    async def kill(self, reason: str) -> None:
+        self.killed.append(reason)
+
+    async def rearm(self) -> None:
+        self.killed.append("rearm")
 
     def snapshot(self) -> dict[str, Any]:
         return {"mode": "paper"}
@@ -130,6 +131,7 @@ def test_dashboard_requires_token(monkeypatch: pytest.MonkeyPatch) -> None:
     assert client.get("/api/state", headers=ok).json() == {"mode": "paper"}
     assert client.post("/api/kill", headers=ok).status_code == 200 and rt.killed
     assert client.post("/api/ack", headers=ok).json() == {"acked": 2}
+    assert client.post("/api/rearm", headers=ok).status_code == 200 and rt.killed[-1] == "rearm"
     assert client.get("/docs").status_code == 404  # no public API surface
 
 
@@ -190,3 +192,69 @@ def test_paper_runtime_streams_and_kills_on_stale_data(cfg: Config, tmp_path: Pa
     assert all(h["connected"] for h in healthy["health"].values())
     assert after["halted"] and "stale data" in after["halted"]
     assert any(a["sev"] == "CRITICAL" for a in after["alerts"])
+
+
+def test_runtime_serialises_desk_mutations(cfg: Config, tmp_path: Path) -> None:
+    """Concurrent trades + reconcile + kill against a slow venue: never two order calls in flight."""
+    from conftest import intent
+
+    from kolibri.adapters.sim import SimBroker
+    from kolibri.risk.officer import Approval
+
+    class SlowBroker(SimBroker):
+        inflight = peak = 0
+
+        async def _slow(self) -> None:
+            SlowBroker.inflight += 1
+            SlowBroker.peak = max(SlowBroker.peak, SlowBroker.inflight)
+            await asyncio.sleep(0.003)
+            SlowBroker.inflight -= 1
+
+        async def place(self, order: Any, now: int) -> None:
+            await self._slow()
+            await super().place(order, now)
+
+        async def cancel(self, cid: str, sym: str, now: int) -> None:
+            await self._slow()
+            await super().cancel(cid, sym, now)
+
+    c = with_overrides(cfg, {"state_db": str(tmp_path / "s.sqlite"), "execution.latency_ms": 0})
+
+    async def go() -> Runtime:
+        rt = Runtime(c, exchange=FakeExchange(c), adapter=SlowBroker(c, D("100000")))
+        await rt.on_trade("BTCUSDT", T0, D("100.05"), D(1), True)
+        async with rt.lock:
+            await rt.desk.exe.open(intent(), Approval(D(1), D(1)), D(100), T0)
+        prices = ["99.9", "100.5", "101.2", "99.5", "98.9", "100.2"] * 5
+        jobs = [rt.on_trade("BTCUSDT", T0 + 10 * (i + 1), D(p), D(1), False) for i, p in enumerate(prices)]
+        await asyncio.gather(*jobs, rt.reconcile_once(), rt.kill("test kill"))
+        for i in range(5):
+            await rt.on_trade("BTCUSDT", T0 + 10_000 + i, D("100"), D(1), False)
+        return rt
+
+    rt = asyncio.run(go())
+    assert SlowBroker.peak == 1
+    assert not rt.desk.exe.positions and rt.adapter.base["BTCUSDT"] == 0  # type: ignore[attr-defined]
+    rt.j.close()
+
+
+def test_paper_restart_mid_position_is_flattened_and_halted(cfg: Config, tmp_path: Path) -> None:
+    c = with_overrides(cfg, {"state_db": str(tmp_path / "s.sqlite"), "warmup_days": 2})
+    from kolibri.core.journal import Journal
+
+    j = Journal(c.state_db)  # a previous paper session died holding 0.5 BTC
+    j.set_state("paper_account", {"quote": "9000", "base": {"BTCUSDT": "0.5"}})
+    j.close()
+
+    async def go() -> dict[str, Any]:
+        rt = Runtime(c, exchange=FakeExchange(c))
+        await rt.start(serve_dashboard=False)
+        await asyncio.sleep(0.5)
+        snap = rt.snapshot()
+        base = rt.adapter.base["BTCUSDT"]  # type: ignore[attr-defined]
+        await rt.shutdown()
+        return snap | {"base": base}
+
+    snap = asyncio.run(go())
+    assert snap["halted"] and "unexpected position" in snap["halted"]
+    assert snap["base"] == 0

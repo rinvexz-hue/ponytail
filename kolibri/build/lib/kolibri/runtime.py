@@ -60,10 +60,8 @@ class Runtime:
 
                 adapter = BinanceAdapter(cfg, testnet=os.environ.get("BINANCE_TESTNET") == "1")
             else:
-                acct = self.j.get_state("paper_account") or {"quote": str(cfg.paper_equity), "base": {}}
-                adapter = SimBroker(cfg, Decimal(acct["quote"]))
-                # holdings survive restarts, so startup reconciliation sees (and flattens) them like live
-                adapter.base.update({s: Decimal(q) for s, q in acct["base"].items() if s in adapter.base})
+                quote = Decimal(self.j.get_state("paper_quote", str(cfg.paper_equity)))
+                adapter = SimBroker(cfg, quote)
         self.adapter = adapter
         self.paper = isinstance(adapter, SimBroker)
         self.desk = Desk(cfg, adapter, self.j, adapter.equity({}) if self.paper else cfg.paper_equity)
@@ -146,10 +144,6 @@ class Runtime:
         async with self.lock:
             await self.desk.kill(reason, now_ms())
 
-    async def rearm(self) -> None:
-        async with self.lock:
-            self.desk.risk.rearm(now_ms())
-
     async def flatten(self, reason: str) -> None:
         async with self.lock:
             await self.desk.exe.flatten_all(reason, now_ms())
@@ -162,8 +156,7 @@ class Runtime:
                 await self.desk.kill("; ".join(problems), now)
         if self.paper:
             assert isinstance(self.adapter, SimBroker)
-            self.j.set_state("paper_account", {"quote": str(self.adapter.quote),
-                                               "base": {s: str(q) for s, q in self.adapter.base.items()}})
+            self.j.set_state("paper_quote", str(self.adapter.quote))
 
     async def alert_loop(self) -> None:
         last_hb = now_ms()
