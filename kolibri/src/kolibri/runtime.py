@@ -20,6 +20,7 @@ from kolibri.alerts.telegram import Alert, AlertManager
 from kolibri.analyst.analyst import Health
 from kolibri.auditor.auditor import daily_report, day_stats, rejection_histogram
 from kolibri.auditor.graduation import check_graduation
+from kolibri.backtest.data import append_bars
 from kolibri.backtest.metrics import max_drawdown_pct
 from kolibri.core.config import Config
 from kolibri.core.journal import Journal
@@ -56,9 +57,9 @@ class Runtime:
         self.j.subscribe(self.alerts.on_event)
         if adapter is None:
             if cfg.mode == "live":
-                from kolibri.adapters.binance import BinanceAdapter
+                from kolibri.adapters.kraken import KrakenAdapter
 
-                adapter = BinanceAdapter(cfg, testnet=os.environ.get("BINANCE_TESTNET") == "1")
+                adapter = KrakenAdapter(cfg)
             else:
                 acct = self.j.get_state("paper_account") or {"quote": str(cfg.paper_equity), "base": {}}
                 adapter = SimBroker(cfg, Decimal(acct["quote"]))
@@ -100,6 +101,7 @@ class Runtime:
             await asyncio.sleep(max(0.0, (minute + MINUTE_MS + grace - t) / 1000))
             bars = self.builder.close_minute(minute)
             if bars:
+                append_bars(self.cfg.data_dir, list(bars.values()))  # restarts only refetch the gap
                 self._refresh_health()
                 async with self.lock:
                     await self.desk.on_bars(bars, minute + MINUTE_MS)
@@ -175,9 +177,10 @@ class Runtime:
             if now - last_hb >= self.cfg.alerts.heartbeat_min * MINUTE_MS:
                 last_hb = now
                 s = self.snapshot()
-                self.alerts.push(Alert("INFO", f"💓 Hartslag ({self.cfg.mode}): vermogen {s['equity']:.2f} USDT, "
-                                               f"{len(s['positions'])} open positie(s), "
-                                               f"{'GESTOPT: ' + s['halted'] if s['halted'] else 'actief'}", now / 1000))
+                state = f"GESTOPT: {s['halted']}" if s["halted"] else "actief"
+                text = (f"💓 Hartslag ({self.cfg.mode}): vermogen {s['equity']:.2f} {self.cfg.quote}, "
+                        f"{len(s['positions'])} open positie(s), {state}")
+                self.alerts.push(Alert("INFO", text, now / 1000))
             if now // DAY_MS != day:
                 self.alerts.push(Alert("INFO", daily_report(self.j, day * DAY_MS), now / 1000))
                 day = now // DAY_MS
@@ -188,7 +191,7 @@ class Runtime:
         if self.exchange is None:
             import ccxt.pro as ccxtpro
 
-            self.exchange = ccxtpro.binance({"enableRateLimit": True})
+            self.exchange = ccxtpro.kraken({"enableRateLimit": True})
         self.scout = Scout(self.cfg, self.exchange, self.on_trade, self.on_book)
         verify = getattr(self.adapter, "verify_filters", None)
         if verify is not None:
@@ -196,7 +199,8 @@ class Runtime:
             if problems:
                 raise LiveRefused("; ".join(problems))
         # warm-up: features only, never trades on history
-        per_sym = {s: await self.scout.warmup_bars(s, self.cfg.warmup_days) for s in self.cfg.symbols}
+        per_sym = {s: await self.scout.warmup_bars(s, self.cfg.warmup_days, self.cfg.data_dir)
+                   for s in self.cfg.symbols}
         by_ts: dict[int, dict[str, Any]] = {}
         for s, bars in per_sym.items():
             for b in bars:
@@ -299,7 +303,8 @@ class Runtime:
                 health[s] = {"connected": h.connected, "tick_age_s": round((now - h.last_msg_ms) / 1000, 1)
                              if h.last_msg_ms else None, "reconnects": h.reconnects}
         return {
-            "mode": self.cfg.mode, "now": now, "equity": eq, "peak": float(risk.peak),
+            "mode": self.cfg.mode, "venue": self.cfg.venue, "quote": self.cfg.quote,
+            "now": now, "equity": eq, "peak": float(risk.peak),
             "drawdown_pct": round((1 - eq / float(risk.peak)) * 100, 3) if risk.peak > 0 else 0.0,
             "day_pnl_pct": round((eq / float(risk.day_start) - 1) * 100, 3) if risk.day_start > 0 else 0.0,
             "halted": risk.halted(now), "positions": positions,

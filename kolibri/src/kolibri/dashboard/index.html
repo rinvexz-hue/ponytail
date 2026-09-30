@@ -85,7 +85,7 @@ dl.glossary dt { font-weight: 700; } dl.glossary dd { margin: 2px 0 0; color: va
 </head>
 <body>
 <header>
-  <div class="brand"><b>KOLI<span>BRI</span></b><small>scalping desk · BTC · ETH · SOL · XRP</small></div>
+  <div class="brand"><b>KOLI<span>BRI</span></b><small>scalping desk · <span id="venue">Kraken</span> · BTC · ETH · SOL · XRP</small></div>
   <span id="mode" class="chip neutral" title="Paper = gesimuleerd geld, Live = echt geld">—</span>
   <span id="halt" class="chip neutral" title="Mag het systeem nieuwe trades openen?">—</span>
   <div class="actions">
@@ -234,7 +234,7 @@ $("ack").onclick = () => act("/api/ack", null, "Kritieke meldingen bevestigd.");
 function kpis(s) {
   const t = s.today || {}, L = s.limits || {};
   const k = [
-    ["Vermogen (USDT)", nl(s.equity), "Totale waarde incl. open posities", ""],
+    [`Vermogen (${s.quote || ""})`, nl(s.equity), "Totale waarde incl. open posities", ""],
     ["Terugval vanaf top", (s.drawdown_pct > 0.005 ? "−" : "") + nl(Math.abs(s.drawdown_pct)) + "%", `Onder het hoogste punt · stopt bij −${nl(L.max_drawdown_pct, 0)}%`, s.drawdown_pct > 0 ? "neg" : ""],
     ["Resultaat vandaag", signed(s.day_pnl_pct) + "%", `Sinds 00:00 UTC · stopt bij −${nl(L.daily_loss_pct, 0)}%`, cls(s.day_pnl_pct)],
     ["Trades vandaag", `${t.trades ?? 0} / ${L.max_trades_per_day ?? "—"}`, `Gesloten trades · waarvan ${t.wins ?? 0} winst`, ""],
@@ -281,12 +281,15 @@ function chart(pts) {
     for (const [id, a, b] of [["xh", "x1", px], ["xh", "x2", px], ["dot", "cx", px], ["dot", "cy", py]]) $(id).setAttribute(a, b);
     $("xh").setAttribute("visibility", "visible"); $("dot").setAttribute("visibility", "visible");
     tip.style.display = "block"; tip.style.left = Math.min(px * r.width / W + 10, r.width - 190) + "px"; tip.style.top = "6px";
-    tip.textContent = `${t(pts[i][0])} UTC · ${nl(pts[i][1])} USDT`;
+    tip.textContent = `${t(pts[i][0])} UTC · ${nl(pts[i][1])} ${QUOTE}`;
   };
   $("hit").onmouseleave = () => { tip.style.display = "none"; $("xh").setAttribute("visibility", "hidden"); $("dot").setAttribute("visibility", "hidden"); };
 }
 
+let QUOTE = "";
 function render(s) {
+  QUOTE = s.quote || "";
+  $("venue").textContent = (s.venue || "").replace(/^./, c => c.toUpperCase());
   const live = s.mode === "live";
   $("mode").className = "chip " + (live ? "crit" : "good");
   $("mode").textContent = live ? "LIVE · echt geld" : "PAPER · oefengeld";
@@ -298,7 +301,7 @@ function render(s) {
   const syms = Object.keys({...s.regimes, ...s.health}).sort();
   $("syms").innerHTML = syms.map(k => {
     const h = s.health[k] || {}, [rn, rc] = REGIME[s.regimes[k]] || ["—", "neutral"], [gn, gh, gc] = gate(s.gates[k]);
-    return `<tr><td><b>${esc(k.replace("USDT", ""))}</b><small>${esc(k)}</small></td>
+    return `<tr><td><b>${esc(k.replace(QUOTE, ""))}</b><small>${esc(k)}</small></td>
       <td><span class="chip ${rc}">${rn}</span><small>${esc(REGIME_HELP[s.regimes[k]] || "")}</small></td>
       <td><span class="chip ${gc}">${esc(gn)}</span><small>${esc(gh)}</small></td>
       <td><span class="chip ${h.connected ? "good" : "crit"}">${h.connected ? "Verbonden" : "Verbroken"}</span></td>
@@ -306,7 +309,7 @@ function render(s) {
   }).join("") || `<tr><td colspan="6" class="muted">Wachten op marktdata…</td></tr>`;
 
   $("pos").innerHTML = (s.positions || []).length ? s.positions.map(p => `<tr>
-      <td><b>${esc(p.symbol.replace("USDT", ""))}</b></td>
+      <td><b>${esc(p.symbol.replace(QUOTE, ""))}</b></td>
       <td>${p.direction === "long" ? "Long<small>koop, winst bij stijging</small>" : "Short<small>winst bij daling</small>"}</td>
       <td>${esc(SETUP[p.setup] || p.setup)}</td><td>${esc(p.qty)}</td><td>${esc(p.entry)}</td>
       <td>${esc(p.stop)}<small>staat bij de beurs</small></td><td>${esc(p.mark)}</td>
@@ -320,7 +323,7 @@ function render(s) {
   $("today").innerHTML = `<table><tbody>
     <tr><td>Gesloten trades<small>winst / totaal</small></td><td><b>${t.wins ?? 0} / ${t.trades ?? 0}</b></td></tr>
     <tr><td>Gemiddelde per trade<small>in risico-eenheden</small></td><td class="${cls(t.avg_r)}"><b>${signed(t.avg_r)} R</b></td></tr>
-    <tr><td>Winst / verlies<small>na alle kosten</small></td><td class="${cls(t.pnl)}"><b>${signed(t.pnl)} USDT</b></td></tr>
+    <tr><td>Winst / verlies<small>na alle kosten</small></td><td class="${cls(t.pnl)}"><b>${signed(t.pnl)} ${QUOTE}</b></td></tr>
     <tr><td>Noodstops<small>automatisch of handmatig</small></td><td>${esc((t.kills || []).join("; ") || "Geen")}</td></tr></tbody></table>`;
 
   const rej = Object.entries(s.rejections || {}), mx = Math.max(1, ...rej.map(r => r[1]));

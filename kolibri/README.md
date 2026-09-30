@@ -1,4 +1,4 @@
-# KOLIBRI — risk-first scalping desk (BTC / ETH / SOL / XRP)
+# KOLIBRI — risk-first scalping desk on Kraken (BTC / ETH / SOL / XRP vs EUR)
 
 Autonomous 1–10 minute scalper for large-cap crypto. It trades only when a setup fires **and**
 every hard gate passes **and** the expected edge after fees and slippage is clearly positive.
@@ -8,11 +8,20 @@ bound to the exact config. No profit is claimed or implied — see [KNOWN_LIMITA
 
 ## Read this first (the honest numbers)
 
-At Binance spot VIP0 with BNB discount a round trip costs ~15 bps before slippage. The cost gate
-requires the TP1 distance (= 1R) to be ≥ 3× round-trip cost ≈ 45+ bps. On BTC a 1m ATR is
-typically 5–15 bps, so most BTC setups are **correctly rejected by `4_cost`**. Expect few trades
-until you run on a lower-fee tier/venue. That is the system working, not broken. Also: Binance
-left the Netherlands in 2023 — verify which venue you may legally use before live.
+Kraken Pro spot fees (tiers since 2026-07-09, best of 30-day volume / futures volume / assets on
+platform) make a maker-in / taker-out round trip cost:
+
+| Kraken tier | round trip | minimum TP1 (3× cost gate) |
+|---|---|---|
+| entry (< $2.5k volume) 0.40 / 0.80 % | 1.20 % | 3.6 % |
+| $2.5k volume 0.30 / 0.60 % | 0.90 % | 2.7 % |
+| $10k volume or ~$20k on platform 0.22 / 0.38 % | 0.60 % | 1.8 % |
+| top tiers ≈ 0.06 / 0.16 % | 0.22 % | 0.66 % |
+
+A 1–10 minute move in BTC is typically 0.05–0.3 %. So at any retail Kraken tier the cost gate
+**correctly rejects almost every scalp** (`4_cost`). The desk will mostly sit flat. That is the
+system protecting you, not a bug. Config ships with the entry tier (most conservative); set your
+real tier in `config/symbols.yaml` and confirm it with `kolibri check-live`.
 
 ## Quick start
 
@@ -21,9 +30,10 @@ cd kolibri
 python3.12 -m venv .venv && . .venv/bin/activate
 pip install -e ".[dev]"
 pytest -q                              # 80+ tests: indicators vs `ta`, lookahead, chaos, parity, risk properties
-kolibri download --days 180            # Binance public 1m klines incl. taker-buy volume -> data/history
-kolibri backtest --days 180
-kolibri graduate --days 180 --paper-journal data/kolibri.sqlite
+kolibri download --days 90             # Kraken public trades -> 1m bars (slow: public rate limit, resumable)
+kolibri backtest --days 90
+kolibri graduate --days 90 --paper-journal data/kolibri.sqlite
+kolibri check-live                     # read-only: keys, balances, tick/lot/min size, YOUR fee tier
 cp .env.example .env                   # set DASHBOARD_TOKEN (>=16 chars), Telegram vars
 kolibri run                            # paper; dashboard on http://127.0.0.1:8080
 docker compose up -d --build           # same, as a long-lived service (VPS / home server)
@@ -45,11 +55,11 @@ The same `Desk` code runs backtest, paper and live; only the price source and ad
 
 | Module | Role |
 |---|---|
-| `scout/` | trade stream → 1m bars (timer close, late trades dropped, never repainted), book summary, health, drift |
+| `scout/` | trade stream → 1m bars (timer close, late trades dropped, never repainted), book summary, health, drift; history is rebuilt from Kraken trades through the same bar builder |
 | `analyst/` | streaming indicators (TA-Lib seeding, verified vs `ta`), features, regime, setups, gates, score |
 | `risk/` | sizing, heat, same-direction cap, net exposure, daily/weekly/DD halts (persisted), cooldowns |
 | `executioner/` | order state machine, idempotent ids, partial/late/duplicate fills, stops, TPs, reconciliation |
-| `adapters/` | `SimBroker` (backtest + paper, conservative fills), `BinanceAdapter` (live, spot) |
+| `adapters/` | `SimBroker` (backtest + paper, conservative fills), `KrakenAdapter` (live, spot, EUR) |
 | `backtest/` | event-driven engine, data (CSV/ZIP, downloader, synthetic), metrics, Monte Carlo |
 | `auditor/` | daily report, rejection histogram, drift vs backtest, graduation report |
 | `alerts/`, `dashboard/` | Telegram (severity, rate limit, CRITICAL repeats until `/ack`), local-only dashboard |
@@ -64,11 +74,13 @@ The same `Desk` code runs backtest, paper and live; only the price source and ad
 
 | Brief | Built | Why |
 |---|---|---|
-| polars / numpy / DuckDB+Parquet | pure-Python streaming indicators, CSV in Binance's own layout, SQLite | O(1) incremental per closed bar is what live needs; identical code in backtest = parity. No extra deps. Upgrade path: Parquet if history > years. |
+| polars / numpy / DuckDB+Parquet | pure-Python streaming indicators, CSV kline store, SQLite | O(1) incremental per closed bar is what live needs; identical code in backtest = parity. No extra deps. Upgrade path: Parquet if history > years. |
 | uvloop | stdlib asyncio | load is a few msgs/s; not the bottleneck |
 | typed async event bus | synchronous journal + subscribers, one runtime lock | deterministic backtests; the lock removes interleaving races that an async bus would add |
 | "reject if leverage needed" | size is **capped** at 1x notional | tight scalping stops would otherwise reject almost everything; capping keeps risk ≤ 0.25 % and never levers |
-| resting TP limit orders | synthetic TP on spot (market exit when price trades through) | Binance spot has no reduce-only and locks balance per resting sell: stop + TP cannot coexist |
+| resting TP limit orders | synthetic TP on spot (market exit when price trades through) | Kraken spot has no reduce-only and open sells reserve balance: stop + TP cannot coexist |
+| Binance | Kraken spot, EUR pairs | owner's venue; Binance left NL in 2023 |
+| shadow-live on a testnet | `kolibri check-live` + paper on live data | Kraken has no spot testnet |
 | HTMX / React | one static HTML page + JSON API | nothing to build; auth via bearer token |
 | scripts/ folder | `kolibri <subcommand>` CLI | one entry point |
 | Auditor LLM job | not built | optional in the brief; never in the hot path. Hook: `auditor.daily_report()` text |

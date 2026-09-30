@@ -71,17 +71,17 @@ def test_heat_cap_never_breached(n_open: int, stop_pcts: list[D], corr: float) -
 
 def test_position_limits_and_correlation(cfg: Config) -> None:
     r = officer()
-    two_longs = [pos("ETHUSDT", qty="0.01"), pos("SOLUSDT", qty="0.01")]
-    res = r.review(intent(sym="XRPUSDT"), two_longs, {}, {}, T0)
+    two_longs = [pos("ETHEUR", qty="0.01"), pos("SOLEUR", qty="0.01")]
+    res = r.review(intent(sym="XRPEUR"), two_longs, {}, {}, T0)
     assert isinstance(res, Rejection) and res.gate == "8_risk_same_direction"
-    res = r.review(intent(sym="ETHUSDT"), [pos("ETHUSDT", qty="0.01")], {}, {}, T0)
+    res = r.review(intent(sym="ETHEUR"), [pos("ETHEUR", qty="0.01")], {}, {}, T0)
     assert isinstance(res, Rejection) and res.gate == "8_risk_symbol_busy"
-    res = r.review(intent(sym="BTCUSDT"), [], {}, {"ETHUSDT": (1, D(10)), "SOLUSDT": (1, D(10))}, T0)
+    res = r.review(intent(sym="BTCEUR"), [], {}, {"ETHEUR": (1, D(10)), "SOLEUR": (1, D(10))}, T0)
     assert isinstance(res, Rejection) and res.gate == "8_risk_same_direction"  # pending entries count
     # correlated same-direction legs weigh 1.5x
-    legs = [pos("ETHUSDT", qty="10"), pos("SOLUSDT", qty="10")]
-    assert r.heat(legs, {"ETHUSDT": 0.9, "SOLUSDT": 0.9}) == D("30")
-    assert r.heat(legs, {"ETHUSDT": 0.5, "SOLUSDT": 0.5}) == D("20")
+    legs = [pos("ETHEUR", qty="10"), pos("SOLEUR", qty="10")]
+    assert r.heat(legs, {"ETHEUR": 0.9, "SOLEUR": 0.9}) == D("30")
+    assert r.heat(legs, {"ETHEUR": 0.5, "SOLEUR": 0.5}) == D("20")
 
 
 def test_trades_per_day_cap() -> None:
@@ -126,7 +126,7 @@ def test_daily_weekly_drawdown_limits_and_persistence() -> None:
 
 
 def _trade(pnl: str, reason: str = "stop", ts: int = T0) -> ClosedTrade:
-    return ClosedTrade("BTCUSDT", "A_pullback", Direction.LONG, ts, ts, D(100), D(1), D(pnl), D(0), D(pnl), reason,
+    return ClosedTrade("BTCEUR", "A_pullback", Direction.LONG, ts, ts, D(100), D(1), D(pnl), D(0), D(pnl), reason,
                        D(10000))
 
 
@@ -138,9 +138,9 @@ def test_cooldowns() -> None:
     assert not isinstance(r.review(intent(), [], {}, {}, T0 + 181_000), Rejection)
     for _ in range(3):
         r.on_trade_closed(_trade("-1", reason="time_stop"))
-    res = r.review(intent(sym="ETHUSDT"), [], {}, {}, T0 + 30 * 60_000)
+    res = r.review(intent(sym="ETHEUR"), [], {}, {}, T0 + 30 * 60_000)
     assert isinstance(res, Rejection) and res.detail == "global loss-streak cooldown"
-    assert not isinstance(r.review(intent(sym="ETHUSDT"), [], {}, {}, T0 + 61 * 60_000), Rejection)
+    assert not isinstance(r.review(intent(sym="ETHEUR"), [], {}, {}, T0 + 61 * 60_000), Rejection)
 
 
 def test_config_consistency_is_enforced() -> None:

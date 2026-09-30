@@ -56,7 +56,7 @@ def test_default_fees_block_small_targets(cfg: Config) -> None:
         ({"low5": 98.0}, Regime.TREND_UP, Health(), "1_stop_distance"),
         ({"bias15": -1}, Regime.TREND_UP, Health(), "2_htf"),
         ({"bias60": -1}, Regime.TREND_UP, Health(), "2_htf"),
-        ({"symbol": "ETHUSDT", "leader_mom5_atr": -1.5}, Regime.TREND_UP, Health(), "2_leader"),
+        ({"symbol": "ETHEUR", "leader_mom5_atr": -1.5}, Regime.TREND_UP, Health(), "2_leader"),
         ({"spread_bps": 9.0}, Regime.TREND_UP, Health(), "3_spread"),
         ({"gap": True}, Regime.TREND_UP, Health(), "5_data_gap"),
         ({}, Regime.TREND_UP, Health(connected=False), "5_data_gap"),
@@ -101,9 +101,9 @@ def test_no_short_on_spot_and_dedup(cfg: Config) -> None:
     assert gate_of(_eval(c, regime=Regime.TREND_DOWN, d=SHORT)) == "0_venue_no_short"
     a = Analyst(c)
     f = feat()
-    first = a.evaluate(f, "BTCUSDT", EQ, Health(), None)
+    first = a.evaluate(f, "BTCEUR", EQ, Health(), None)
     assert any(isinstance(r, Intent) for r in first)
-    again = a.evaluate(f, "BTCUSDT", EQ, Health(), None)
+    again = a.evaluate(f, "BTCEUR", EQ, Health(), None)
     assert [r.gate for r in again if isinstance(r, Rejection) and r.setup == "A_pullback"] == ["0_dedup"]
 
 
@@ -139,14 +139,14 @@ def test_setup_triggers_both_ways(cfg: Config) -> None:
 
 def test_candidate_rounding_is_conservative(cfg: Config) -> None:
     f = feat(close=100.237, low5=99.9)
-    c = build_candidate(f, "A_pullback", LONG, (99.873, None, False), cfg.symbol_specs["BTCUSDT"], cfg)
+    c = build_candidate(f, "A_pullback", LONG, (99.873, None, False), cfg.symbol_specs["ETHEUR"], cfg)
     assert c.entry == D("100.23") and c.stop == D("99.87")  # entry down, stop down (further away)
     assert c.tp1 == c.entry + (c.entry - c.stop)
-    tight = build_candidate(f, "A_pullback", LONG, (100.2, None, False), cfg.symbol_specs["BTCUSDT"], cfg)
+    tight = build_candidate(f, "A_pullback", LONG, (100.2, None, False), cfg.symbol_specs["ETHEUR"], cfg)
     assert tight.entry - tight.stop >= D("0.6") * D("0.3") - D("0.01")  # widened to stop_atr_min
 
 
 def test_mean_reversion_target_inside_1r_exits_fully(cfg: Config) -> None:
     f = feat(close=99.2, vwap=99.4)
-    c = build_candidate(f, "B_meanrev", LONG, (98.8, 99.4, False), cfg.symbol_specs["BTCUSDT"], cfg)
+    c = build_candidate(f, "B_meanrev", LONG, (98.8, 99.4, False), cfg.symbol_specs["BTCEUR"], cfg)
     assert c.full_exit and c.tp1 == D("99.4") and c.tp2 is None

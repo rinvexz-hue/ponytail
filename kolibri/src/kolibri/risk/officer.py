@@ -176,7 +176,7 @@ class RiskOfficer:
         gross_open = sum((p.qty * p.entry for p in positions), D0)
         headroom = v.max_leverage * self.equity * Decimal("0.98") - gross_open
         qty = max(D0, min(qty, floor_to(headroom / c.entry, spec.step)))
-        if qty <= 0 or qty * c.entry < spec.min_notional:
+        if qty <= 0 or qty < spec.min_qty or qty * c.entry < spec.min_notional:
             return veto("8_risk_min_notional", f"qty {qty}")
         notional = qty * c.entry
         net = sum((p.direction.sign * p.qty * p.entry for p in positions), D0) + c.direction.sign * notional

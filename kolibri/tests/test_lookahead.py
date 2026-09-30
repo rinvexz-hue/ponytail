@@ -12,7 +12,7 @@ from kolibri.core.config import Config
 
 
 def _run(bars: list, n: int) -> object:
-    eng = FeatureEngine("BTCUSDT")
+    eng = FeatureEngine("BTCEUR")
     out = None
     for b in bars[:n]:
         out = eng.on_bar(b)
@@ -20,8 +20,8 @@ def _run(bars: list, n: int) -> object:
 
 
 def test_incremental_equals_from_scratch(cfg: Config) -> None:
-    bars = synthetic(cfg, T0, 1440 + 400, seed=11)["BTCUSDT"]
-    eng = FeatureEngine("BTCUSDT")
+    bars = synthetic(cfg, T0, 1440 + 400, seed=11)["BTCEUR"]
+    eng = FeatureEngine("BTCEUR")
     stream = [eng.on_bar(b) for b in bars]
     checked = 0
     for t in range(300, len(bars), 97):  # recompute from scratch on bars[:t+1]
@@ -31,18 +31,18 @@ def test_incremental_equals_from_scratch(cfg: Config) -> None:
 
 
 def test_future_bars_cannot_change_the_past(cfg: Config) -> None:
-    bars = synthetic(cfg, T0, 1400, seed=5)["BTCUSDT"]
+    bars = synthetic(cfg, T0, 1400, seed=5)["BTCEUR"]
     t = 1300
     base = _run(bars, t + 1)
     mutated = bars[: t + 1] + [replace(b, close=b.close * 3, high=b.high * 3) for b in bars[t + 1:]]
-    eng = FeatureEngine("BTCUSDT")
+    eng = FeatureEngine("BTCEUR")
     seen = [eng.on_bar(b) for b in mutated]
     assert seen[t] == base
 
 
 def test_htf_bias_only_updates_on_closed_htf_bar(cfg: Config) -> None:
-    bars = synthetic(cfg, T0, 1400, seed=9)["BTCUSDT"]
-    eng = FeatureEngine("BTCUSDT")
+    bars = synthetic(cfg, T0, 1400, seed=9)["BTCEUR"]
+    eng = FeatureEngine("BTCEUR")
     prev = None
     for b in bars:
         eng.on_bar(b)
@@ -52,8 +52,8 @@ def test_htf_bias_only_updates_on_closed_htf_bar(cfg: Config) -> None:
 
 
 def test_duplicate_and_out_of_order_bars_ignored(cfg: Config) -> None:
-    bars = synthetic(cfg, T0, 1400, seed=2)["BTCUSDT"]
-    eng = FeatureEngine("BTCUSDT")
+    bars = synthetic(cfg, T0, 1400, seed=2)["BTCEUR"]
+    eng = FeatureEngine("BTCEUR")
     for b in bars:
         eng.on_bar(b)
     last = eng.last

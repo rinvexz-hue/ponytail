@@ -1,19 +1,13 @@
-"""Historical bars: Binance kline CSV/ZIP files (data.binance.vision layout), a REST downloader,
-and a synthetic generator for tests and demos. Stdlib only.
-
-Storage choice: one CSV per symbol-month in Binance's own column layout. It is what the public
-dumps already ship, needs no extra dependency, and is plenty fast for 1m bars."""
+"""Historical 1m bars: a CSV store (one file per symbol-month, standard kline column layout incl.
+taker-buy volume), a Kraken downloader that rebuilds bars from public trades, and a synthetic
+generator for tests and demos. Stdlib only; plenty fast for 1m bars."""
 
 from __future__ import annotations
 
 import csv
 import io
-import json
 import math
 import random
-import time
-import urllib.parse
-import urllib.request
 import zipfile
 from collections.abc import Iterator
 from datetime import UTC, datetime
@@ -22,8 +16,6 @@ from pathlib import Path
 
 from kolibri.core.config import Config
 from kolibri.core.models import MINUTE_MS, Bar, floor_to
-
-REST = "https://api.binance.com/api/v3/klines"
 
 
 def _ms(x: str) -> int:
@@ -82,33 +74,57 @@ def load_bars_file(p: Path, symbol: str) -> list[Bar]:
         return list(parse_rows(symbol, csv.reader(fh)))
 
 
-def download(symbol: str, start_ms: int, end_ms: int, data_dir: str | Path, pause_s: float = 0.25) -> int:
-    """Paginate Binance public klines (includes taker-buy volume). Resumable: rewrites month files."""
-    n, cursor = 0, start_ms
-    while cursor < end_ms:
-        q = urllib.parse.urlencode({"symbol": symbol, "interval": "1m", "startTime": cursor,
-                                    "endTime": end_ms - 1, "limit": 1000})
-        with urllib.request.urlopen(f"{REST}?{q}", timeout=30) as resp:  # noqa: S310 (fixed https host)
-            rows = json.load(resp)
-        if not rows:
-            break
-        bars = list(parse_rows(symbol, iter([[str(x) for x in r] for r in rows])))
-        now = int(time.time() * 1000)
-        bars = [b for b in bars if b.close_ts <= now]  # never store the still-forming bar
-        save_bars(data_dir, bars)
-        n += len(bars)
-        cursor = int(rows[-1][0]) + MINUTE_MS
-        time.sleep(pause_s)
-    return n
+def append_bars(data_dir: str | Path, bars: list[Bar]) -> None:
+    """Cheap append for the live runtime (one row per closed bar); load_bars de-duplicates."""
+    Path(data_dir).mkdir(parents=True, exist_ok=True)
+    for b in bars:
+        m = datetime.fromtimestamp(b.open_ts / 1000, UTC).strftime("%Y-%m")
+        with (Path(data_dir) / f"{b.symbol}-1m-{m}.csv").open("a", newline="") as fh:
+            csv.writer(fh).writerow([b.open_ts, b.open, b.high, b.low, b.close, b.volume, b.close_ts - 1, 0, 0,
+                                     b.taker_buy_volume, 0, 0])
+
+
+def download(cfg: Config, symbol: str, start_ms: int, end_ms: int) -> int:
+    """Rebuild 1m bars from Kraken's public trade history (taker side included). Resumable: continues
+    after the newest stored bar, saving one UTC day at a time. Slow by design (public rate limit):
+    budget roughly 1-3 hours per symbol per 6 months."""
+    import asyncio
+
+    import ccxt.pro as ccxtpro
+
+    from kolibri.scout.scout import bars_from_trades
+
+    have = load_bars(cfg.data_dir, symbol, start_ms, end_ms)
+    cursor = have[-1].close_ts if have else start_ms - start_ms % MINUTE_MS
+
+    async def run() -> int:
+        ex = ccxtpro.kraken({"enableRateLimit": True})
+        n, day = 0, 1440 * MINUTE_MS
+        try:
+            nonlocal cursor
+            while cursor < end_ms:
+                stop = min(end_ms, cursor - cursor % day + day)
+                bars = await bars_from_trades(ex, cfg, symbol, cursor, stop)
+                save_bars(cfg.data_dir, bars)
+                n += len(bars)
+                print(f"{symbol} {datetime.fromtimestamp(cursor / 1000, UTC):%Y-%m-%d}: {len(bars)} bars", flush=True)
+                cursor = stop
+        finally:
+            await ex.close()
+        return n
+
+    return asyncio.run(run())
 
 
 def synthetic(cfg: Config, start_ms: int, minutes: int, seed: int = 7) -> dict[str, list[Bar]]:
     """Regime-switching market (trend / range / squeeze / chaos) with a leader and correlated alts.
     For tests and demos only: it has no real edge in it and must never be used to judge a strategy."""
     rng = random.Random(seed)
-    base_px = {"BTCUSDT": 65000.0, "ETHUSDT": 2600.0, "SOLUSDT": 150.0, "XRPUSDT": 0.6}
-    betas = {"BTCUSDT": 1.0, "ETHUSDT": 1.1, "SOLUSDT": 1.4, "XRPUSDT": 1.2}
-    px = {s: base_px.get(s, 100.0) for s in cfg.symbols}
+    by_base_px = {"BTC": 60000.0, "ETH": 2400.0, "SOL": 140.0, "XRP": 0.55}
+    by_base_beta = {"BTC": 1.0, "ETH": 1.1, "SOL": 1.4, "XRP": 1.2}
+    base_px = {s: by_base_px.get(cfg.symbol_specs[s].base, 100.0) for s in cfg.symbols}
+    betas = {s: by_base_beta.get(cfg.symbol_specs[s].base, 1.0) for s in cfg.symbols}
+    px = dict(base_px)
     out: dict[str, list[Bar]] = {s: [] for s in cfg.symbols}
     regime, left, drift, vol, anchor = "range", 0, 0.0, 6e-4, 0.0
     for i in range(minutes):

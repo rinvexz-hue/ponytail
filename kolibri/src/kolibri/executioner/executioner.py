@@ -68,8 +68,8 @@ class Executioner:
 
     # ---- helpers ---------------------------------------------------------------------------
     def _new_id(self, symbol: str, purpose: str, now: int) -> str:
-        self.seq += 1
-        return f"K{purpose[0]}{symbol[:6]}{now % 10**10}{self.seq:04d}"
+        self.seq += 1  # Kraken cl_ord_id free text: max 18 chars -> K + purpose + base(3) + ms(8) + seq(4) = 17
+        return f"K{purpose[0]}{symbol[:3]}{now % 10**8:08d}{self.seq % 10**4:04d}"
 
     async def _place(self, symbol: str, purpose: str, side_dir: Direction, entry: bool, otype: OrderType,
                      qty: Decimal, now: int, price: Decimal | None = None,
@@ -218,7 +218,8 @@ class Executioner:
         spec = self.cfg.symbol_specs[sym]
         qty = pos.qty if pos.full_exit else floor_to(pos.qty * self.cfg.strategy.tp1_fraction, spec.step)
         rest = pos.qty - qty
-        if qty * pos.tp1 < spec.min_notional or (rest > 0 and rest * pos.tp1 < spec.min_notional):
+        too_small = qty < spec.min_qty or qty * pos.tp1 < spec.min_notional
+        if too_small or (rest > 0 and (rest < spec.min_qty or rest * pos.tp1 < spec.min_notional)):
             qty = pos.qty  # too small to split: exit everything at TP1
         if self.cfg.venue_cfg.supports_reduce_only:
             await self._place(sym, "tp1", pos.direction, False, OrderType.LIMIT, qty, now, price=pos.tp1)
@@ -258,6 +259,9 @@ class Executioner:
             spec = self.cfg.symbol_specs[sym]
             be = pos.entry * (1 + s * (v.maker + v.taker))
             be = ceil_to(be, spec.tick) if s > 0 else floor_to(be, spec.tick)
+            px = u.fill_price  # TP1 just filled here: that is where the market is right now
+            if (be - px) * s >= 0:  # high fees: BE+fees is through the market; a stop there fires at once
+                be = px - s * spec.tick
             if (be - pos.stop) * s > 0:  # only ever tighten
                 pos.stop = be
             await self._sync_stop(sym, now)

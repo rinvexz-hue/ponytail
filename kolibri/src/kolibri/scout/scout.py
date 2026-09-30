@@ -157,7 +157,7 @@ class Scout:
         cs = ccxt_symbol(self.cfg, sym)
 
         async def once() -> None:
-            ob = await self.ex.watch_order_book(cs, 20)
+            ob = await self.ex.watch_order_book(cs, 25)  # Kraken depths: 10, 25, 100, 500, 1000
             self._mark(sym, True)
             b = book_summary(ob, int(ob.get("timestamp") or now_ms()))
             if b is not None:
@@ -176,21 +176,53 @@ class Scout:
                 log.warning("clock check failed: %s", type(e).__name__)
             await asyncio.sleep(60)
 
-    async def warmup_bars(self, sym: str, days: int) -> list[Bar]:
-        """Closed 1m bars incl. taker-buy volume via Binance raw klines endpoint."""
+    async def warmup_bars(self, sym: str, days: int, data_dir: str | None = None) -> list[Bar]:
+        """Closed 1m bars for warm-up: the local bar store first, then only the missing tail rebuilt
+        from Kraken's public trade history (Kraken candles carry no taker-buy volume)."""
+        from kolibri.backtest.data import load_bars
+
         end = now_ms() - now_ms() % MINUTE_MS
         start = end - days * 1440 * MINUTE_MS
-        out: list[Bar] = []
-        cursor = start
-        while cursor < end:
-            rows = await self.ex.publicGetKlines({"symbol": sym, "interval": "1m", "startTime": cursor,
-                                                  "endTime": end - 1, "limit": 1000})
-            if not rows:
+        stored = load_bars(data_dir, sym, start, end) if data_dir else []
+        tail_from = stored[-1].close_ts if stored else start
+        return stored + await bars_from_trades(self.ex, self.cfg, sym, tail_from, end)
+
+
+async def bars_from_trades(ex: Any, cfg: Config, sym: str, start_ms: int, end_ms: int,
+                           progress: Callable[[int], None] | None = None) -> list[Bar]:
+    """Rebuild closed 1m bars in [start_ms, end_ms) from the venue's public trades, through the same
+    BarBuilder the live feed uses (so historical and live bars are built identically)."""
+    start_ms -= start_ms % MINUTE_MS
+    builder = BarBuilder((sym,))
+    out: list[Bar] = []
+    minute, since, seen = start_ms, start_ms, set[str]()
+    cs = ccxt_symbol(cfg, sym)
+
+    def close_until(ts: int) -> None:
+        nonlocal minute
+        while minute + MINUTE_MS <= min(ts, end_ms):
+            bar = builder.close_minute(minute).get(sym)
+            if bar is not None:
+                out.append(bar)
+            minute += MINUTE_MS
+
+    while since < end_ms:
+        page = await ex.fetch_trades(cs, since=since, limit=1000)
+        fresh = [t for t in page if str(t["id"]) not in seen and start_ms <= int(t["timestamp"]) < end_ms]
+        if not fresh:
+            if not page or int(page[-1]["timestamp"]) >= end_ms:
                 break
-            for r in rows:
-                b = Bar(sym, int(r[0]), MINUTE_MS, Decimal(r[1]), Decimal(r[2]), Decimal(r[3]), Decimal(r[4]),
-                        Decimal(r[5]), Decimal(r[9]))
-                if b.close_ts <= end:
-                    out.append(b)
-            cursor = int(rows[-1][0]) + MINUTE_MS
-        return out
+            since = int(page[-1]["timestamp"]) + 1  # a full page inside one millisecond
+            continue
+        for t in fresh:
+            seen.add(str(t["id"]))
+            ts = int(t["timestamp"])
+            close_until(ts)
+            builder.on_trade(sym, ts, Decimal(str(t["price"])), Decimal(str(t["amount"])), t.get("side") == "buy")
+        since = int(fresh[-1]["timestamp"])
+        if len(seen) > 200_000:
+            seen = {str(t["id"]) for t in fresh}  # ids only need to cover the page boundary
+        if progress:
+            progress(since)
+    close_until(end_ms)
+    return out

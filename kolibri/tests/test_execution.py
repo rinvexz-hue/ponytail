@@ -13,7 +13,7 @@ from kolibri.core.config import Config, with_overrides
 from kolibri.core.models import OrderStatus, OrderType
 from kolibri.executioner.executioner import Executioner
 
-S = "BTCUSDT"
+S = "BTCEUR"
 
 
 def filled_long(h: Harness, qty: str = "1") -> None:
@@ -25,7 +25,7 @@ def filled_long(h: Harness, qty: str = "1") -> None:
 
 
 def reduce_only(cfg: Config) -> Config:
-    return with_overrides(cfg, {"venues.binance.supports_reduce_only": True})
+    return with_overrides(cfg, {"venues.kraken.supports_reduce_only": True})
 
 
 def test_entry_fill_places_stop_and_tp1(cfg: Config) -> None:
@@ -48,16 +48,16 @@ def test_post_only_never_fills_at_touch_only_through(cfg: Config) -> None:
 
 
 def test_tp1_moves_stop_to_breakeven_plus_fees_then_stop_closes(cfg: Config) -> None:
-    h = Harness(reduce_only(cfg))
+    h = Harness(reduce_only(cheap(cfg)))
     filled_long(h)
     h.tick(S, T0 + 1000, "101.01")  # TP1 fills half
     pos = h.exe.positions[S]
     assert pos.tp1_done and pos.qty == D("0.5")
-    assert pos.stop == D("100.15")  # 100 * (1 + 0.00075 + 0.00075), rounded up to tick
+    assert pos.stop == D("100.1")  # 100 * (1 + 0 + 0.0001) = 100.01, rounded up to the 0.1 tick
     h.tick(S, T0 + 2000, "100.50")
     stops = h.stop_order(S)
-    assert len(stops) == 1 and stops[0].qty == D("0.5") and stops[0].stop_price == D("100.15")
-    h.tick(S, T0 + 3000, "100.10")
+    assert len(stops) == 1 and stops[0].qty == D("0.5") and stops[0].stop_price == D("100.1")
+    h.tick(S, T0 + 3000, "100.05")
     assert S not in h.exe.positions
     t = h.closed[0]
     assert t.pnl > 0 and t.r > 0 and t.exit_reason == "trail"
@@ -69,8 +69,8 @@ def test_stop_out_is_minus_one_r_plus_costs(cfg: Config) -> None:
     h.tick(S, T0 + 1000, "99.00")
     t = h.closed[0]
     assert t.exit_reason == "stop"
-    # 1R of price distance plus both fees (0.075 % each side on a 1 % stop = 0.15R) and slippage
-    assert D("-1.2") < t.r < D("-1.15")
+    # Kraken entry tier: 0.40 % maker in + 0.80 % taker out on a 1 % stop = 1.2R of fees on top of 1R
+    assert D("-2.25") < t.r < D("-2.15")
     h.tick(S, T0 + 1_500, "99.00")  # TP1 cancel lands after latency: no orphaned order
     assert not h.exe.open_orders(S)
 
@@ -111,7 +111,7 @@ def test_entry_timeout_reprices_once_then_abandons(cfg: Config) -> None:
     h.tick(S, T0 + 5_000, "100.05")  # timeout -> cancel, near -> reprice pending
     h.tick(S, T0 + 5_200, "100.05")  # cancel effective -> new entry at 100.04
     entries = [o for o in h.exe.orders.values() if o.purpose == "entry"]
-    assert len(entries) == 2 and entries[1].price == D("100.04")
+    assert len(entries) == 2 and entries[1].price == D("99.95")
     h.tick(S, T0 + 10_300, "100.05")
     h.tick(S, T0 + 10_500, "100.05")
     assert S not in h.exe.entries and S not in h.exe.positions
@@ -176,7 +176,7 @@ def test_delayed_fill_reports(cfg: Config) -> None:
 def test_three_consecutive_rejects_raise_alarm(cfg: Config) -> None:
     h = Harness(cfg)
     h.broker.reject_next = 3
-    for i, sym in enumerate(("BTCUSDT", "ETHUSDT", "SOLUSDT")):
+    for i, sym in enumerate(("BTCEUR", "ETHEUR", "SOLEUR")):
         h.tick(sym, T0 - 1000, "100.05")
         h.open(intent(sym=sym), touch="100.00", now=T0 + i)
     h.tick(S, T0 + 500, "100.05")
@@ -217,13 +217,13 @@ def test_flatten_cancels_everything_and_exits(cfg: Config) -> None:
 
 def test_reconcile_unexpected_position_is_flattened(cfg: Config) -> None:
     h = Harness(cfg)
-    h.tick("ETHUSDT", T0, "100")
-    h.broker.base["ETHUSDT"] = D("2")
+    h.tick("ETHEUR", T0, "100")
+    h.broker.base["ETHEUR"] = D("2")
     assert asyncio.run(h.exe.reconcile(T0)) == []  # first sighting: could be an in-flight fill
     problems = asyncio.run(h.exe.reconcile(T0 + 30_000))
     assert problems and "unexpected position" in problems[0]
-    h.tick("ETHUSDT", T0 + 30_500, "100")
-    assert h.broker.base["ETHUSDT"] == 0
+    h.tick("ETHEUR", T0 + 30_500, "100")
+    assert h.broker.base["ETHEUR"] == 0
 
 
 def test_restart_mid_position_ends_flat_and_consistent(cfg: Config) -> None:
@@ -260,7 +260,7 @@ def test_idempotent_client_ids(cfg: Config) -> None:
     h = Harness(cheap(cfg))
     filled_long(h)
     ids = [o.client_id for o in h.exe.orders.values()]
-    assert len(ids) == len(set(ids)) and all(len(i) <= 36 for i in ids)
+    assert len(ids) == len(set(ids)) and all(len(i) <= 18 for i in ids)
     o = next(iter(h.exe.orders.values()))
     n = len(h.broker.orders)
     asyncio.run(h.broker.place(o, T0 + 900))  # resubmission of an existing id is a no-op
@@ -269,7 +269,7 @@ def test_idempotent_client_ids(cfg: Config) -> None:
 
 def test_spot_tp_is_synthetic_and_never_oversells(cfg: Config) -> None:
     """Spot (no reduce-only): only the stop rests; TP1 fires as a market exit after the stop is pulled."""
-    h = Harness(cfg)
+    h = Harness(cheap(cfg))
     filled_long(h)
     h.tick(S, T0 + 400, "100.50")
     resting = [lv.order for lv in h.broker.orders.values() if lv.order.open and lv.order.side.value == "sell"]
@@ -277,7 +277,7 @@ def test_spot_tp_is_synthetic_and_never_oversells(cfg: Config) -> None:
     h.tick(S, T0 + 1000, "101.01")  # through TP1 -> cancel stop + market 50 %
     h.tick(S, T0 + 1200, "101.00")
     pos = h.exe.positions[S]
-    assert pos.tp1_done and pos.qty == D("0.5") and pos.stop == D("100.15")
+    assert pos.tp1_done and pos.qty == D("0.5") and pos.stop == D("100.1")
     h.tick(S, T0 + 1500, "101.00")
     resting = [lv.order for lv in h.broker.orders.values() if lv.order.open]
     assert [(o.purpose, o.qty) for o in resting] == [("stop", D("0.5"))]
@@ -314,3 +314,13 @@ def test_order_rate_budget(cfg: Config) -> None:
         h.exe.placed_ts.append(T0 + i)
     assert h.exe.orders_last_minute(T0 + 10) == 5
     assert h.exe.orders_last_minute(T0 + 61_000) == 0
+
+
+def test_breakeven_stop_never_placed_through_the_market(cfg: Config) -> None:
+    """Entry-tier Kraken fees (1.2 % round trip) put BE+fees above a 1R TP: cap it one tick under the mark."""
+    h = Harness(cfg)
+    filled_long(h)
+    h.tick(S, T0 + 1000, "101.01")
+    h.tick(S, T0 + 1200, "101.00")
+    pos = h.exe.positions[S]
+    assert pos.tp1_done and pos.stop < D("101.00")  # 100 * 1.012 = 101.2 would trigger instantly

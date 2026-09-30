@@ -1,23 +1,28 @@
-# Venue capabilities and per-symbol filters. Live mode re-reads tick/step/min_notional
-# from the exchange and refuses to start if they differ from these.
+# Venue capabilities and per-symbol filters. Live mode re-reads tick / lot / minimum order size
+# from Kraken at start and refuses to run if they differ from these (`kolibri check-live` shows them).
 venues:
-  binance:
-    supports_short: false       # spot; enable only on a venue you are legally allowed to use for it
-    supports_reduce_only: false # spot locks balance per resting sell: stop + TP cannot both rest
+  kraken:
+    supports_short: false       # spot; Kraken margin shorts stay off (check what you may legally use)
+    supports_reduce_only: false # spot: open sells reserve balance, so stop + TP cannot both rest
     max_leverage: "1"
-    maker_fee: "0.001"          # 0.10 % VIP0 spot
-    taker_fee: "0.001"
-    fee_discount: "0.25"        # BNB fee discount; set 0 if not paying fees in BNB
+    # Kraken Pro spot tiers changed on 2026-07-09 (best of 30d volume / futures volume / assets on
+    # platform). Entry tier (< $2.5k volume) is 0.40 % maker / 0.80 % taker. Put YOUR tier here;
+    # `kolibri check-live` prints the rates Kraken actually charges your account.
+    maker_fee: "0.004"
+    taker_fee: "0.008"
+    fee_discount: "0"
   paper:
     supports_short: false
     supports_reduce_only: false
     max_leverage: "1"
-    maker_fee: "0.001"
-    taker_fee: "0.001"
-    fee_discount: "0.25"
+    maker_fee: "0.004"
+    taker_fee: "0.008"
+    fee_discount: "0"
 
+# tick = price step, step = lot step, min_qty = Kraken ordermin, min_notional = Kraken costmin.
+# spread/impact are the backtest/paper model when no live book is available.
 symbols:
-  BTCUSDT: {base: BTC, tick: "0.01",   step: "0.00001", min_notional: "5", spread_bps: "0.2", impact_bps: "0.5"}
-  ETHUSDT: {base: ETH, tick: "0.01",   step: "0.0001",  min_notional: "5", spread_bps: "0.3", impact_bps: "0.8"}
-  SOLUSDT: {base: SOL, tick: "0.01",   step: "0.001",   min_notional: "5", spread_bps: "0.8", impact_bps: "1.5"}
-  XRPUSDT: {base: XRP, tick: "0.0001", step: "0.1",     min_notional: "5", spread_bps: "1.0", impact_bps: "1.5"}
+  BTCEUR: {base: BTC, tick: "0.1",     step: "0.00000001", min_qty: "0.00005", min_notional: "0.5", spread_bps: "0.5", impact_bps: "1.0"}
+  ETHEUR: {base: ETH, tick: "0.01",    step: "0.00000001", min_qty: "0.001",   min_notional: "0.5", spread_bps: "0.8", impact_bps: "1.5"}
+  SOLEUR: {base: SOL, tick: "0.01",    step: "0.00000001", min_qty: "0.02",    min_notional: "0.5", spread_bps: "2.0", impact_bps: "3.0"}
+  XRPEUR: {base: XRP, tick: "0.00001", step: "0.00000001", min_qty: "2",       min_notional: "0.5", spread_bps: "2.0", impact_bps: "3.0"}

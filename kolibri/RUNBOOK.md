@@ -40,14 +40,18 @@ intentional (fail closed); do not "fix" it by skipping reconciliation.
 
 ## Promotion path (never skip a stage)
 
-1. `kolibri download --days 365` → `kolibri backtest` → `kolibri graduate` (walk-forward OOS, ±20 %
+1. `kolibri download --days 90` (hours: Kraken's public trade endpoint is rate limited; it resumes
+   where it stopped) → `kolibri backtest` → `kolibri graduate` (walk-forward OOS, ±20 %
    perturbation, Monte Carlo). Fix nothing by curve-fitting; ≤ 12 tunables.
 2. Paper ≥ 2 weeks: `kolibri run` with `MODE=paper`. Then
    `kolibri graduate --paper-journal data/kolibri.sqlite`.
-3. Shadow-live on the Binance **spot testnet**: `BINANCE_TESTNET=1`, testnet keys.
-4. Live-small: fund a **dedicated sub-account** with ≤ 10 % of intended capital, USDT + a little BNB
-   for fees (required: the adapter refuses to start without BNB when the BNB discount is configured).
-   Keys: trade-only, withdrawals disabled, IP-whitelisted. Set `MODE=live`, `LIVE_CONFIRM=I_ACCEPT_THE_RISK`.
+3. Kraken has no spot testnet. Instead: `kolibri check-live` with the live keys (read-only: prints
+   balances, verifies tick / lot / minimum order size and the fee tier Kraken really charges you;
+   refuses on any mismatch), while paper keeps running on live data.
+4. Live-small: a **dedicated Kraken sub-account** holding only EUR, ≤ 10 % of intended capital.
+   API key permissions: *Query funds*, *Query open/closed orders & trades*, *Create & modify
+   orders*, *Cancel/close orders*, *WebSocket interface*. **Never** *Withdraw funds*. Set the key's
+   IP allowlist to the VPS. Then `MODE=live`, `LIVE_CONFIRM=I_ACCEPT_THE_RISK`.
 5. Scale only after live-small matches the graduation baseline (Auditor drift flags stay quiet).
 
 Changing any trading parameter changes the config fingerprint and invalidates the graduation

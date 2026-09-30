@@ -178,6 +178,7 @@ class SymbolCfg(_Frozen):
     tick: Decimal
     step: Decimal
     min_notional: Decimal
+    min_qty: Decimal = Decimal(0)  # venue minimum order size in base units
     spread_bps: Decimal  # modelled spread for backtest / paper when no book is available
     impact_bps: Decimal  # modelled taker impact per fill
 
@@ -231,6 +232,10 @@ class Config(_Frozen):
     @property
     def venue_cfg(self) -> VenueCfg:
         return self.venues[self.venue]
+
+    @property
+    def quote(self) -> str:
+        return self.leader[len(self.symbol_specs[self.leader].base):]
 
     def fingerprint(self) -> str:
         """Hash of everything that changes trading behaviour (not mode/paths)."""

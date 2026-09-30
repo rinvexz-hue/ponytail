@@ -28,7 +28,7 @@ from kolibri.scout.scout import BarBuilder
 def loose(cfg: Config) -> Config:
     """Permissive config purely to exercise the machinery on synthetic data."""
     return cheap(cfg, **{"gates.score_threshold": 55, "gates.min_net_r": "0", "gates.cost_multiple": "1",
-                         "venues.binance.supports_short": True})
+                         "venues.kraken.supports_short": True})
 
 
 @pytest.fixture(scope="module")
@@ -90,17 +90,17 @@ def test_backtest_and_paper_paths_produce_identical_intents(cfg: Config, market:
 
 
 def test_signal_never_fills_on_its_own_bar() -> None:
-    b = Bar("BTCUSDT", T0, 60_000, D(100), D(101), D(99), D("100.5"), D(1), D("0.5"))
+    b = Bar("BTCEUR", T0, 60_000, D(100), D(101), D(99), D("100.5"), D(1), D("0.5"))
     path = bar_path(b)
     assert path[-1][0] < b.close_ts  # all intrabar points precede the close where signals fire
     assert [p for _, p in path] == [D(100), D(99), D(101), D("100.5")]  # adverse extreme first
 
 
 def test_bar_storage_roundtrip(tmp_path: Path, market: dict[str, list[Bar]]) -> None:
-    bars = market["ETHUSDT"][:3000]
+    bars = market["ETHEUR"][:3000]
     save_bars(tmp_path, bars)
-    assert load_bars(tmp_path, "ETHUSDT") == bars
-    assert load_bars(tmp_path, "ETHUSDT", bars[10].open_ts, bars[20].open_ts) == bars[10:20]
+    assert load_bars(tmp_path, "ETHEUR") == bars
+    assert load_bars(tmp_path, "ETHEUR", bars[10].open_ts, bars[20].open_ts) == bars[10:20]
 
 
 def test_metrics_and_monte_carlo() -> None:
@@ -115,12 +115,12 @@ def test_desk_daily_loss_kill_flattens_and_halts(cfg: Config) -> None:
         broker = SimBroker(cfg, D("10000"))
         desk = Desk(cfg, broker, j, D("10000"))
         for ts, px in ((T0, "100.05"), (T0 + 10, "100.05")):
-            broker.on_price("BTCUSDT", ts, D(px))
-            await desk.on_price("BTCUSDT", D(px), ts)
+            broker.on_price("BTCEUR", ts, D(px))
+            await desk.on_price("BTCEUR", D(px), ts)
         await desk.exe.open(intent(stop="90", tp1="110"), Approval(D("90"), D("900")), D("100"), T0 + 20)
         for ts, px in ((T0 + 300, "99.99"), (T0 + 600, "99.99"), (T0 + 900, "97.70"), (T0 + 1200, "97.70")):
-            broker.on_price("BTCUSDT", ts, D(px))
-            await desk.on_price("BTCUSDT", D(px), ts)
+            broker.on_price("BTCEUR", ts, D(px))
+            await desk.on_price("BTCEUR", D(px), ts)
         return desk
 
     desk = asyncio.run(go())
@@ -173,4 +173,4 @@ def test_touch_falls_back_to_bar_close_before_first_print(cfg: Config) -> None:
     desk = Desk(cfg, SimBroker(cfg, D("1000")), Journal(), D("1000"))
     from kolibri.core.models import Direction
 
-    assert desk._touch("XRPUSDT", Direction.LONG, D("0.5000")) == D("0.4999")
+    assert desk._touch("XRPEUR", Direction.LONG, D("0.50000")) == D("0.49999")

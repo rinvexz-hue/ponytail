@@ -25,19 +25,19 @@ from kolibri.scout.scout import BarBuilder, book_summary
 
 # ---- scout ------------------------------------------------------------------------------------
 def test_bar_builder_late_trades_and_flat_bars() -> None:
-    b = BarBuilder(("BTCUSDT", "XRPUSDT"))
-    b.on_trade("BTCUSDT", T0 + 1_000, D(100), D(1), True)
-    b.on_trade("BTCUSDT", T0 + 2_000, D(102), D(2), False)
-    b.on_trade("BTCUSDT", T0 + 61_000, D(103), D(1), True)  # next minute, arrives before the close timer
-    b.on_trade("XRPUSDT", T0 + 5_000, D("0.5"), D(10), False)
+    b = BarBuilder(("BTCEUR", "XRPEUR"))
+    b.on_trade("BTCEUR", T0 + 1_000, D(100), D(1), True)
+    b.on_trade("BTCEUR", T0 + 2_000, D(102), D(2), False)
+    b.on_trade("BTCEUR", T0 + 61_000, D(103), D(1), True)  # next minute, arrives before the close timer
+    b.on_trade("XRPEUR", T0 + 5_000, D("0.5"), D(10), False)
     bars = b.close_minute(T0)
-    btc = bars["BTCUSDT"]
+    btc = bars["BTCEUR"]
     assert (btc.open, btc.high, btc.low, btc.close, btc.volume, btc.taker_buy_volume) == (100, 102, 100, 102, 3, 1)
-    b.on_trade("BTCUSDT", T0 + 59_000, D(99), D(1), True)  # minute already closed: dropped, never repaint
+    b.on_trade("BTCEUR", T0 + 59_000, D(99), D(1), True)  # minute already closed: dropped, never repaint
     assert b.late == 1
     nxt = b.close_minute(T0 + 60_000)
-    assert nxt["BTCUSDT"].close == 103
-    assert nxt["XRPUSDT"].volume == 0 and nxt["XRPUSDT"].close == D("0.5")  # quiet minute -> flat bar
+    assert nxt["BTCEUR"].close == 103
+    assert nxt["XRPEUR"].volume == 0 and nxt["XRPEUR"].close == D("0.5")  # quiet minute -> flat bar
 
 
 def test_book_summary() -> None:
@@ -75,7 +75,7 @@ def test_alerts_rate_limit_dedupe_and_critical_repeat(cfg: Config) -> None:
 def test_event_formatting(cfg: Config) -> None:
     kill = format_event(DeskEvent("kill", T0, data={"reason": "stale", "manual_rearm": True}), cfg)
     assert kill is not None and kill.severity == "CRITICAL" and "handmatig hervatten" in kill.text
-    trade = format_event(DeskEvent("trade", T0, "BTCUSDT", {"trade": {"r": "1.5", "pnl": "10", "exit_reason": "tp1"}}),
+    trade = format_event(DeskEvent("trade", T0, "BTCEUR", {"trade": {"r": "1.5", "pnl": "10", "exit_reason": "tp1"}}),
                          cfg)
     assert trade is not None and "+1.50R" in trade.text
     assert format_event(DeskEvent("order_reject", T0, "X", {"purpose": "entry", "reason": "post_only_would_take"}),
@@ -146,10 +146,21 @@ class FakeExchange:
         self.px = {s: float(v[-1].close) for s, v in self.hist.items()}
         self.live = True
 
-    async def publicGetKlines(self, p: dict[str, Any]) -> list[list[str]]:
-        rows = [b for b in self.hist[p["symbol"]] if p["startTime"] <= b.open_ts <= p["endTime"]][:1000]
-        return [[str(b.open_ts), str(b.open), str(b.high), str(b.low), str(b.close), str(b.volume), "0", "0", "0",
-                 str(b.taker_buy_volume), "0", "0"] for b in rows]
+    async def fetch_trades(self, sym: str, since: int, limit: int) -> list[dict[str, Any]]:
+        """Trade history equivalent to the synthetic bars (one taker-buy print, one taker-sell print each)."""
+        out: list[dict[str, Any]] = []
+        for b in self.hist[sym.replace("/", "")]:
+            if b.close_ts <= since:
+                continue
+            for k, (px, qty, side) in enumerate(((b.open, b.taker_buy_volume, "buy"),
+                                                  (b.close, b.volume - b.taker_buy_volume, "sell"))):
+                ts = b.open_ts + 10_000 + 30_000 * k
+                if ts >= since and qty > 0:
+                    out.append({"id": f"{b.open_ts}-{k}", "timestamp": ts, "price": float(px),
+                                "amount": float(qty), "side": side})
+            if len(out) >= limit:
+                break
+        return out[:limit]
 
     async def watch_trades(self, sym: str) -> list[dict[str, Any]]:
         await asyncio.sleep(0.02)
@@ -222,19 +233,19 @@ def test_runtime_serialises_desk_mutations(cfg: Config, tmp_path: Path) -> None:
 
     async def go() -> Runtime:
         rt = Runtime(c, exchange=FakeExchange(c), adapter=SlowBroker(c, D("100000")))
-        await rt.on_trade("BTCUSDT", T0, D("100.05"), D(1), True)
+        await rt.on_trade("BTCEUR", T0, D("100.05"), D(1), True)
         async with rt.lock:
             await rt.desk.exe.open(intent(), Approval(D(1), D(1)), D(100), T0)
         prices = ["99.9", "100.5", "101.2", "99.5", "98.9", "100.2"] * 5
-        jobs = [rt.on_trade("BTCUSDT", T0 + 10 * (i + 1), D(p), D(1), False) for i, p in enumerate(prices)]
+        jobs = [rt.on_trade("BTCEUR", T0 + 10 * (i + 1), D(p), D(1), False) for i, p in enumerate(prices)]
         await asyncio.gather(*jobs, rt.reconcile_once(), rt.kill("test kill"))
         for i in range(5):
-            await rt.on_trade("BTCUSDT", T0 + 10_000 + i, D("100"), D(1), False)
+            await rt.on_trade("BTCEUR", T0 + 10_000 + i, D("100"), D(1), False)
         return rt
 
     rt = asyncio.run(go())
     assert SlowBroker.peak == 1
-    assert not rt.desk.exe.positions and rt.adapter.base["BTCUSDT"] == 0  # type: ignore[attr-defined]
+    assert not rt.desk.exe.positions and rt.adapter.base["BTCEUR"] == 0  # type: ignore[attr-defined]
     rt.j.close()
 
 
@@ -243,7 +254,7 @@ def test_paper_restart_mid_position_is_flattened_and_halted(cfg: Config, tmp_pat
     from kolibri.core.journal import Journal
 
     j = Journal(c.state_db)  # a previous paper session died holding 0.5 BTC
-    j.set_state("paper_account", {"quote": "9000", "base": {"BTCUSDT": "0.5"}})
+    j.set_state("paper_account", {"quote": "9000", "base": {"BTCEUR": "0.5"}})
     j.close()
 
     async def go() -> dict[str, Any]:
@@ -251,7 +262,7 @@ def test_paper_restart_mid_position_is_flattened_and_halted(cfg: Config, tmp_pat
         await rt.start(serve_dashboard=False)
         await asyncio.sleep(0.5)
         snap = rt.snapshot()
-        base = rt.adapter.base["BTCUSDT"]  # type: ignore[attr-defined]
+        base = rt.adapter.base["BTCEUR"]  # type: ignore[attr-defined]
         await rt.shutdown()
         return snap | {"base": base}
 

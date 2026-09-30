@@ -48,7 +48,7 @@ def format_event(ev: DeskEvent, cfg: Config) -> Alert | None:
         r = float(t["r"])
         why = EXIT_NL.get(str(t["exit_reason"]), str(t["exit_reason"]))
         return Alert("INFO", f"{'✅' if r > 0 else '🔻'} Positie gesloten {ev.symbol} · {why} · {r:+.2f}R "
-                             f"({float(t['pnl']):+.2f} USDT)", now)
+                             f"({float(t['pnl']):+.2f} {cfg.quote})", now)
     if ev.kind == "kill":
         return Alert("CRITICAL", f"🛑 NOODSTOP: {d['reason']} — alles gesloten, handel gestopt"
                                  f"{'; handmatig hervatten nodig' if d.get('manual_rearm') else ''}", now)

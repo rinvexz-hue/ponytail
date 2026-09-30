@@ -3,9 +3,9 @@
 # loosen risk mid-trade. Money-like values are strings so they parse straight into Decimal.
 
 mode: paper                 # paper | live   (env MODE overrides; live also needs LIVE_CONFIRM + graduation)
-venue: binance
-symbols: [BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT]
-leader: BTCUSDT
+venue: kraken
+symbols: [BTCEUR, ETHEUR, SOLEUR, XRPEUR]   # Kraken spot, EUR quote
+leader: BTCEUR
 paper_equity: "10000"
 state_db: data/kolibri.sqlite
 data_dir: data/history
@@ -88,7 +88,7 @@ execution:
   entry_timeout_s: 5
   max_chase_atr: "0.3"
   reconcile_s: 30
-  order_rate_per_min: 600       # 50% of Binance spot's 1200 weight/min headroom target
+  order_rate_per_min: 30        # Kraken's per-pair order counter is small (and cancels < 5 s cost extra); 50 % headroom
   flatten_on_shutdown: true
   bar_grace_ms: 1500
 

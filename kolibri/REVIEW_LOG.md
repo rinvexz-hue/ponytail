@@ -44,3 +44,14 @@ was fixed, and what now covers it.
 Final pass-3 re-scan after these fixes: no float in the price/qty/fee path, no naive datetimes,
 no config field unused, every gate has a pass and a fail test, ruff + `mypy --strict` clean,
 full suite green. Risk + execution coverage is enforced ≥ 85 % in CI.
+
+## Venue switch to Kraken (EUR) — re-review
+
+| # | Area | Issue | Fix | Covered by |
+|---|---|---|---|---|
+| 23 | Resilience | Kraken websocket only accepts book depths 10/25/100/500/1000; depth 20 would fail on the first live start | depth 25 (top 20 still used) | ccxt source checked; not testable without the venue |
+| 24 | Orders | Kraken `cl_ord_id` free text is max 18 chars; ours were 22 | 17-char ids | `test_idempotent_client_ids` |
+| 25 | Money | high fees put breakeven+fees above a 1R TP1, so the moved stop would fire instantly | capped one tick under the TP1 fill price | `test_breakeven_stop_never_placed_through_the_market` |
+| 26 | Risk | Kraken has a minimum order size per pair (`ordermin`) besides min cost | `min_qty` in symbol config, checked in sizing and TP splitting; live start verifies it | `test_sizing_never_exceeds_risk_cap_and_respects_filters` |
+| 27 | Money | Kraken sells default to fees in the base asset, which would drift local vs exchange holdings | every order sends `oflags=fciq` (fees in EUR) | code path; `check-live` |
+| 28 | Data | Kraken candles have no taker-buy volume | history rebuilt from public trades through the live BarBuilder; live bars appended locally | `test_paper_runtime_streams_and_kills_on_stale_data` (warm-up via trades) |

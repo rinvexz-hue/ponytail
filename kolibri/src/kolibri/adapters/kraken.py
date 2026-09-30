@@ -1,9 +1,10 @@
-"""Live Binance spot adapter (ccxt.pro). Only constructed after every live gate has passed.
+"""Live Kraken spot adapter (ccxt.pro). Only constructed after every live gate has passed.
 
-Spot semantics: no reduce-only flag exists, so exits are plain sells sized to the position;
-protective stops are exchange-side STOP_LOSS orders. Fees paid in BNB are converted with the
-venue's configured rate (approximation, see KNOWN_LIMITATIONS). Verify on the spot testnet
-(`live.testnet`) before real capital: this module cannot be exercised without the venue."""
+Spot semantics: open sells reserve balance and spot has no reduce-only, so exits are plain sells
+sized to the position; protective stops are exchange-side `stop-loss` orders (market on trigger,
+last-price trigger). Every order asks for fees in the quote currency (`fciq`), so base-asset
+holdings always equal what the desk thinks it holds. Kraken has no spot testnet: run
+`kolibri check-live` (read-only) before the first live start."""
 
 from __future__ import annotations
 
@@ -23,23 +24,20 @@ from kolibri.scout.scout import ccxt_symbol
 log = logging.getLogger(__name__)
 
 
-class BinanceAdapter:
-    def __init__(self, cfg: Config, testnet: bool = False) -> None:
+class KrakenAdapter:
+    def __init__(self, cfg: Config) -> None:
         import ccxt.pro as ccxtpro  # optional dependency, only needed live
 
-        key, secret = os.environ.get("BINANCE_API_KEY"), os.environ.get("BINANCE_API_SECRET")
+        key, secret = os.environ.get("KRAKEN_API_KEY"), os.environ.get("KRAKEN_API_SECRET")
         if not key or not secret:
-            raise RuntimeError("BINANCE_API_KEY / BINANCE_API_SECRET not set")
+            raise RuntimeError("KRAKEN_API_KEY / KRAKEN_API_SECRET not set")
         self.cfg, self.caps = cfg, cfg.venue_cfg
-        self.ex = ccxtpro.binance({"apiKey": key, "secret": secret, "enableRateLimit": True,
-                                   "options": {"defaultType": "spot"}})
-        if testnet:
-            self.ex.set_sandbox_mode(True)
+        self.ex = ccxtpro.kraken({"apiKey": key, "secret": secret, "enableRateLimit": True})
         self._listener: Callable[[OrderUpdate], None] = lambda u: None
         self._by_exchange_id: dict[str, Order] = {}
         self._by_client: dict[str, Order] = {}
         self._filled: dict[str, Decimal] = {}
-        self.quote = self.bnb = D0
+        self.quote = D0
         self.base: dict[str, Decimal] = {}
         self.calls: deque[tuple[float, bool]] = deque(maxlen=1000)  # (ts, error) for the kill switch
 
@@ -52,49 +50,56 @@ class BinanceAdapter:
         return (sum(recent) / len(recent) if recent else 0.0), len(recent)
 
     async def verify_filters(self) -> list[str]:
-        """Exchange filters must match config, otherwise sizing/rounding is wrong -> refuse to start."""
+        """Exchange filters and fee tier must match config, else sizing / cost gates are wrong."""
         markets = await self.ex.load_markets()
         problems = []
         for sym in self.cfg.symbols:
             m = markets[ccxt_symbol(self.cfg, sym)]
             spec = self.cfg.symbol_specs[sym]
-            tick, step = Decimal(str(m["precision"]["price"])), Decimal(str(m["precision"]["amount"]))
-            if tick != spec.tick or step != spec.step:
-                problems.append(f"{sym}: exchange tick/step {tick}/{step} != config {spec.tick}/{spec.step}")
+            live = {"tick": m["precision"]["price"], "step": m["precision"]["amount"],
+                    "min_qty": m["limits"]["amount"]["min"], "min_notional": m["limits"]["cost"]["min"]}
+            for k, v in live.items():
+                if v is not None and Decimal(str(v)) != getattr(spec, k):
+                    problems.append(f"{sym}: Kraken {k}={v} but config says {getattr(spec, k)}")
+            fee = await self.ex.fetch_trading_fee(ccxt_symbol(self.cfg, sym))
+            for k in ("maker", "taker"):
+                charged, cfgd = Decimal(str(fee[k])), getattr(self.caps, k)
+                if charged > cfgd:  # cheaper than configured is fine (conservative); dearer is not
+                    problems.append(f"{sym}: Kraken charges {k} {charged:.4%} but config assumes {cfgd:.4%}")
         await self.refresh_balances()
-        if self.caps.fee_discount > 0 and self.bnb <= 0:
-            # without BNB, fees come out of the base asset and every fill leaves local != exchange qty
-            problems.append("fee_discount configured but no BNB balance to pay fees")
         return problems
 
     async def place(self, order: Order, now: int) -> None:
         cs = ccxt_symbol(self.cfg, order.symbol)
-        params: dict[str, Any] = {"newClientOrderId": order.client_id}
+        params: dict[str, Any] = {"clientOrderId": order.client_id, "oflags": "fciq"}
         self._by_client[order.client_id] = order
+        qty = str(order.qty)
         try:
             if order.type is OrderType.LIMIT_MAKER:
-                res = await self.ex.create_order(cs, "LIMIT_MAKER", order.side.value, str(order.qty),
-                                                 str(order.price), params)
+                res = await self.ex.create_order(cs, "limit", order.side.value, qty, str(order.price),
+                                                 params | {"postOnly": True})
             elif order.type is OrderType.LIMIT:
-                res = await self.ex.create_order(cs, "limit", order.side.value, str(order.qty),
-                                                 str(order.price), params | {"timeInForce": "GTC"})
+                res = await self.ex.create_order(cs, "limit", order.side.value, qty, str(order.price), params)
             elif order.type is OrderType.STOP_MARKET:
-                res = await self.ex.create_order(cs, "STOP_LOSS", order.side.value, str(order.qty), None,
-                                                 params | {"stopPrice": str(order.stop_price)})
+                res = await self.ex.create_order(cs, "market", order.side.value, qty, None,
+                                                 params | {"stopLossPrice": str(order.stop_price)})
             else:
-                res = await self.ex.create_order(cs, "market", order.side.value, str(order.qty), None, params)
+                res = await self.ex.create_order(cs, "market", order.side.value, qty, None, params)
             self.calls.append((time.time(), False))
             self._by_exchange_id[str(res["id"])] = order
             self._listener(OrderUpdate(order.client_id, OrderStatus.ACKED, now))
         except Exception as e:
             self.calls.append((time.time(), True))
-            reason = "post_only_would_take" if "LIMIT_MAKER" in str(e) or "immediately match" in str(e) \
-                else type(e).__name__
+            reason = "post_only_would_take" if "Post only" in str(e) else type(e).__name__
             self._listener(OrderUpdate(order.client_id, OrderStatus.REJECTED, now, reason=reason))
 
     async def cancel(self, client_id: str, symbol: str, now: int) -> None:
+        cs = ccxt_symbol(self.cfg, symbol)
         try:
-            await self.ex.cancel_order(None, ccxt_symbol(self.cfg, symbol), {"origClientOrderId": client_id})
+            if client_id in self._by_client:
+                await self.ex.cancel_order(None, cs, {"clientOrderId": client_id})
+            else:  # foreign order found by reconciliation: keyed by its exchange id
+                await self.ex.cancel_order(client_id, cs)
             self.calls.append((time.time(), False))
         except Exception as e:  # already filled/canceled is fine; the stream tells the truth
             self.calls.append((time.time(), "OrderNotFound" not in type(e).__name__))
@@ -102,20 +107,18 @@ class BinanceAdapter:
     async def refresh_balances(self) -> None:
         bal = await self.ex.fetch_balance()
         self.calls.append((time.time(), False))
-        quote_ccy = self.cfg.leader[len(self.cfg.symbol_specs[self.cfg.leader].base):]
-        self.quote = Decimal(str(bal["total"].get(quote_ccy, 0)))
+        self.quote = Decimal(str(bal["total"].get(self.cfg.quote, 0)))
         self.base = {s: Decimal(str(bal["total"].get(self.cfg.symbol_specs[s].base, 0))) for s in self.cfg.symbols}
-        self.bnb = Decimal(str(bal["total"].get("BNB", 0)))
 
     async def positions(self) -> dict[str, Decimal]:
         await self.refresh_balances()
-        dust = {s: self.cfg.symbol_specs[s].step for s in self.cfg.symbols}
-        return {s: q for s, q in self.base.items() if q > dust[s]}
+        return {s: q for s, q in self.base.items() if q >= max(self.cfg.symbol_specs[s].min_qty, Decimal("1e-8"))}
 
     async def open_orders(self) -> dict[str, str]:
         out: dict[str, str] = {}
-        for sym in self.cfg.symbols:
-            for o in await self.ex.fetch_open_orders(ccxt_symbol(self.cfg, sym)):
+        for o in await self.ex.fetch_open_orders():
+            sym = str(o["symbol"]).replace("/", "")
+            if sym in self.cfg.symbol_specs:
                 out[str(o.get("clientOrderId") or o["id"])] = sym
         self.calls.append((time.time(), False))
         return out
@@ -124,7 +127,7 @@ class BinanceAdapter:
         return self.quote + sum((q * marks.get(s, D0) for s, q in self.base.items()), D0)
 
     async def stream_fills(self) -> None:
-        """User-data stream: my trades -> fill updates (exec_id = trade id), orders -> cancels/rejects."""
+        """Private websocket: my trades -> fill updates (exec_id = trade id); orders -> cancels/rejects."""
         async def trades() -> None:
             while True:
                 for t in await self.ex.watch_my_trades():
@@ -134,7 +137,7 @@ class BinanceAdapter:
                     qty, px = Decimal(str(t["amount"])), Decimal(str(t["price"]))
                     fee = t.get("fee") or {}
                     rate = self.caps.maker if t.get("takerOrMaker") == "maker" else self.caps.taker
-                    fee_q = Decimal(str(fee.get("cost", 0))) if fee.get("currency") == "USDT" else qty * px * rate
+                    fee_q = Decimal(str(fee["cost"])) if fee.get("currency") == self.cfg.quote else qty * px * rate
                     done = self._filled.get(o.client_id, D0) + qty
                     self._filled[o.client_id] = done
                     side = 1 if o.side.value == "buy" else -1
@@ -150,7 +153,8 @@ class BinanceAdapter:
                     cid = str(o.get("clientOrderId"))
                     if cid in self._by_client and o["status"] in ("canceled", "expired", "rejected"):
                         st = OrderStatus.REJECTED if o["status"] == "rejected" else OrderStatus.CANCELED
-                        self._listener(OrderUpdate(cid, st, int(o.get("lastUpdateTimestamp") or o["timestamp"])))
+                        ts = int(o.get("lastUpdateTimestamp") or o.get("timestamp") or time.time() * 1000)
+                        self._listener(OrderUpdate(cid, st, ts))
 
         await asyncio.gather(trades(), orders())
 

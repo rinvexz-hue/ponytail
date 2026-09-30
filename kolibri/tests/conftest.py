@@ -24,7 +24,7 @@ def cfg() -> Config:
 
 def cheap(cfg: Config, **extra: object) -> Config:
     """Low-fee venue so trade mechanics can be exercised; never a statement about real costs."""
-    ov: dict[str, object] = {"venues.binance.maker_fee": "0", "venues.binance.taker_fee": "0.0001"}
+    ov: dict[str, object] = {"venues.kraken.maker_fee": "0", "venues.kraken.taker_fee": "0.0001"}
     ov.update(extra)
     return with_overrides(cfg, ov)
 
@@ -32,7 +32,7 @@ def cheap(cfg: Config, **extra: object) -> Config:
 def feat(**kw: object) -> Features:
     """A clean trend-up pullback (setup A long) on a price-100 market."""
     base = Features(
-        symbol="BTCUSDT", ts=T0 + 3_600_000, warm=True, close=100.2, high=100.25, low=99.9, open=100.0, atr=0.3,
+        symbol="BTCEUR", ts=T0 + 3_600_000, warm=True, close=100.2, high=100.25, low=99.9, open=100.0, atr=0.3,
         ema9=100.1, ema21=100.0, ema50=99.5, vwap=99.95, avwap=99.95, prev_day_vwap=99.0, prev_day_high=101.5,
         prev_day_low=98.0, rsi7=45.0, rsi7_prev=40.0, rsi7_min3=38.0, rsi7_max3=45.0, rsi14=55.0, stochrsi=0.3,
         macd_slope5=0.1, bb_upper=101.0, bb_lower=99.0, bb_mid=100.0, bw_pct=0.5, adx=30.0, rv_pct=0.5, volz=2.2,
@@ -43,7 +43,7 @@ def feat(**kw: object) -> Features:
     return replace(base, **kw)  # type: ignore[arg-type]
 
 
-def intent(sym: str = "BTCUSDT", entry: str = "100", stop: str = "99", tp1: str = "101", tp2: str | None = None,
+def intent(sym: str = "BTCEUR", entry: str = "100", stop: str = "99", tp1: str = "101", tp2: str | None = None,
            d: Direction = Direction.LONG, full_exit: bool = False, atr: str = "1") -> Intent:
     c = Candidate(sym, "A_pullback", d, T0, D(entry), D(stop), D(tp1), D(tp2) if tp2 else None, D(atr),
                   full_exit=full_exit)

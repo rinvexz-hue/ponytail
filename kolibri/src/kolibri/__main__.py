@@ -1,7 +1,8 @@
 """KOLIBRI command line.
 
   kolibri run                      # paper by default; live needs MODE=live + LIVE_CONFIRM + graduation
-  kolibri download --days 180      # Binance public 1m klines -> data/history
+  kolibri download --days 90       # Kraken public trades -> 1m bars in data/history (slow, resumable)
+  kolibri check-live               # read-only: Kraken keys, balances, filters and YOUR fee tier vs config
   kolibri backtest [--days N | --synthetic N]
   kolibri graduate [--paper-journal data/kolibri.sqlite] [--optimize] [--synthetic N]
   kolibri rearm                    # clear a manual halt (after you know why it tripped)
@@ -47,6 +48,7 @@ def main(argv: list[str] | None = None) -> None:
             b.add_argument("--paper-journal")
             b.add_argument("--optimize", action="store_true")
     sub.add_parser("rearm")
+    sub.add_parser("check-live")
     a = p.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     cfg = load_config()
@@ -61,8 +63,22 @@ def main(argv: list[str] | None = None) -> None:
         end = int(time.time() * 1000)
         end -= end % MINUTE_MS
         for s in cfg.symbols:
-            n = download(s, end - a.days * DAY_MS, end, cfg.data_dir)
+            n = download(cfg, s, end - a.days * DAY_MS, end)
             print(f"{s}: {n} bars")
+    elif a.cmd == "check-live":
+        from kolibri.adapters.kraken import KrakenAdapter
+
+        async def check() -> list[str]:
+            ad = KrakenAdapter(cfg)
+            try:
+                problems = await ad.verify_filters()
+                print(f"balances: {ad.quote} {cfg.quote}, " + ", ".join(f"{s}={q}" for s, q in ad.base.items()))
+                return problems
+            finally:
+                await ad.close()
+
+        problems = asyncio.run(check())
+        print("\n".join(problems) if problems else "OK: filters and fee tier match config (no orders placed)")
     elif a.cmd == "backtest":
         from kolibri.backtest.engine import run
 
