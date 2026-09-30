@@ -1,0 +1,23 @@
+# Venue capabilities and per-symbol filters. Live mode re-reads tick/step/min_notional
+# from the exchange and refuses to start if they differ from these.
+venues:
+  binance:
+    supports_short: false       # spot; enable only on a venue you are legally allowed to use for it
+    supports_reduce_only: false # spot locks balance per resting sell: stop + TP cannot both rest
+    max_leverage: "1"
+    maker_fee: "0.001"          # 0.10 % VIP0 spot
+    taker_fee: "0.001"
+    fee_discount: "0.25"        # BNB fee discount; set 0 if not paying fees in BNB
+  paper:
+    supports_short: false
+    supports_reduce_only: false
+    max_leverage: "1"
+    maker_fee: "0.001"
+    taker_fee: "0.001"
+    fee_discount: "0.25"
+
+symbols:
+  BTCUSDT: {base: BTC, tick: "0.01",   step: "0.00001", min_notional: "5", spread_bps: "0.2", impact_bps: "0.5"}
+  ETHUSDT: {base: ETH, tick: "0.01",   step: "0.0001",  min_notional: "5", spread_bps: "0.3", impact_bps: "0.8"}
+  SOLUSDT: {base: SOL, tick: "0.01",   step: "0.001",   min_notional: "5", spread_bps: "0.8", impact_bps: "1.5"}
+  XRPUSDT: {base: XRP, tick: "0.0001", step: "0.1",     min_notional: "5", spread_bps: "1.0", impact_bps: "1.5"}

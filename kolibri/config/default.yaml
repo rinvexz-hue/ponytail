@@ -1,0 +1,122 @@
+# KOLIBRI default config. Single source of truth for every risk / gate / strategy number.
+# Loaded once at startup into a frozen model: there is no hot reload, so nothing can
+# loosen risk mid-trade. Money-like values are strings so they parse straight into Decimal.
+
+mode: paper                 # paper | live   (env MODE overrides; live also needs LIVE_CONFIRM + graduation)
+venue: binance
+symbols: [BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT]
+leader: BTCUSDT
+paper_equity: "10000"
+state_db: data/kolibri.sqlite
+data_dir: data/history
+warmup_days: 3
+
+risk:
+  risk_per_trade_pct: "0.25"    # % of equity lost if the stop fills (fees + slippage included)
+  max_positions: 4
+  heat_cap_pct: "1.0"           # = 4 x 0.25 ; validated below
+  max_same_direction: 2
+  corr_threshold: 0.8           # 60-bar 1m-return correlation to the leader
+  corr_heat_multiplier: "1.5"
+  max_net_exposure: "1.0"       # |sum signed notional| / equity
+  daily_loss_pct: "2"           # -> flatten, halt until next UTC day
+  weekly_loss_pct: "5"          # -> halt until manual re-arm
+  max_drawdown_pct: "8"         # from equity peak -> halt until manual re-arm
+  max_trades_per_day: 40
+  stopout_cooldown_s: 180
+  loss_streak: 4
+  loss_streak_cooldown_s: 3600
+
+kill:
+  stale_data_s: 3
+  ws_gap_recover_s: 5
+  max_consecutive_rejects: 3
+  max_clock_drift_ms: 1000
+  api_error_rate: 0.3           # errors / calls over the last 60 s (min 10 calls)
+
+gates:
+  max_spread_bps: "5"
+  max_slip_bps: "5"
+  cost_multiple: "3"            # gross TP1 distance >= 3 x round-trip cost
+  min_net_r: "0.25"
+  max_tick_age_s: 2
+  max_clock_drift_ms: 250
+  score_threshold: 70
+  event_blackout_min: 10
+  funding_blackout_min: 2
+  funding_blackout_enabled: false   # only meaningful on perps
+  sessions_allowed: [asia, london, ny, "off"]   # quoted: bare off is YAML false
+  signal_dedup_bars: 5
+  btc_block_atr: 1.0            # alt long blocked if leader 5-bar return < -1.0 leader ATR (mirror for shorts)
+  weights:                      # fixed constants, never tuned online
+    trend: 20
+    momentum: 15
+    volume: 15
+    cvd: 15
+    book: 15
+    cross: 15
+    deriv: 5
+  win_prob_prior: "0.5"         # prior per-trade hit rate for expected-R; replace with journal stats
+  win_prob_per_score_pt: "0.01"    # score 85 -> p=0.65; calibrate from journal stats after paper
+
+regime:
+  adx_trend: 22
+  adx_range: 18
+  squeeze_pct: 0.15
+  chaos_rv_pct: 0.95
+  min_depth_usd: "50000"        # top-10 depth each side; thinner => CHAOS
+  squeeze_memory_bars: 10
+
+strategy:
+  stop_atr_min: "0.6"
+  stop_atr_max: "2.0"
+  structure_buffer_atr: "0.1"
+  runner_expected_r: "1.0"   # conservative prior for the ATR-trailed runner
+  trail_atr: "1.5"
+  trail_step_atr: "0.1"
+  time_stop_s: 600
+  time_stop_min_r: "0.5"
+  tp1_fraction: "0.5"
+  rsi_reset_low: 35
+  rsi_reset_high: 50
+  rsi_extreme: 25
+  breakout_volz: 1.5
+  sweep_volz: 1.5
+
+execution:
+  latency_ms: 150
+  entry_timeout_s: 5
+  max_chase_atr: "0.3"
+  reconcile_s: 30
+  order_rate_per_min: 600       # 50% of Binance spot's 1200 weight/min headroom target
+  flatten_on_shutdown: true
+  bar_grace_ms: 1500
+
+# Parameters the graduation pipeline perturbs +-20 % and walk-forward may search.
+# Keep this list short (<= 12) to limit overfitting.
+tunable: [strategy.stop_atr_min, strategy.trail_atr, strategy.time_stop_s, gates.score_threshold,
+          gates.min_net_r, strategy.breakout_volz, strategy.sweep_volz, strategy.rsi_extreme]
+
+alerts:
+  heartbeat_min: 15
+  max_per_min: 20
+  critical_repeat_s: 60
+  send_rejected_high_score: false
+  rejected_score_alert: 80
+
+dashboard:
+  host: 127.0.0.1               # local / VPN only; never expose publicly
+  port: 8080
+
+graduation:
+  report_path: data/graduation_report.json
+  max_age_days: 30
+  min_trades: 300
+  min_profit_factor: "1.3"
+  min_expectancy_r: "0.15"
+  max_drawdown_pct: "8"
+  min_sharpe: "1.0"
+  max_fee_ratio: "0.4"
+  mc_runs: 1000
+  mc_max_dd_pct: "12"
+  min_paper_days: 14
