@@ -116,7 +116,7 @@ def download(cfg: Config, symbol: str, start_ms: int, end_ms: int) -> int:
     return asyncio.run(run())
 
 
-def synthetic(cfg: Config, start_ms: int, minutes: int, seed: int = 7) -> dict[str, list[Bar]]:
+def synthetic(cfg: Config, start_ms: int, minutes: int, seed: int = 7, bar_minutes: int = 1) -> dict[str, list[Bar]]:
     """Regime-switching market (trend / range / squeeze / chaos) with a leader and correlated alts.
     For tests and demos only: it has no real edge in it and must never be used to judge a strategy."""
     rng = random.Random(seed)
@@ -127,12 +127,14 @@ def synthetic(cfg: Config, start_ms: int, minutes: int, seed: int = 7) -> dict[s
     px = dict(base_px)
     out: dict[str, list[Bar]] = {s: [] for s in cfg.symbols}
     regime, left, drift, vol, anchor = "range", 0, 0.0, 6e-4, 0.0
-    for i in range(minutes):
+    scale = math.sqrt(bar_minutes)
+    for i in range(minutes // bar_minutes):
         if left <= 0:
             regime = rng.choices(["trend", "range", "squeeze", "chaos"], [0.35, 0.4, 0.2, 0.05])[0]
             left = rng.randint(30, 240)
-            drift = rng.choice([-1, 1]) * rng.uniform(1e-4, 3e-4) if regime == "trend" else 0.0
-            vol = {"trend": 6e-4, "range": 5e-4, "squeeze": 2e-4, "chaos": 2.5e-3}[regime]
+            drift = rng.choice([-1, 1]) * rng.uniform(2e-5, 6e-5) if regime == "trend" else 0.0
+            vol = {"trend": 6e-4, "range": 5e-4, "squeeze": 2.5e-4, "chaos": 1.5e-3}[regime] * scale
+            drift *= bar_minutes
             anchor = 0.0
         left -= 1
         shock = rng.gauss(0, vol)
@@ -141,7 +143,7 @@ def synthetic(cfg: Config, start_ms: int, minutes: int, seed: int = 7) -> dict[s
             lead_ret = shock - 0.15 * anchor
         else:
             lead_ret = drift + shock
-        ts = start_ms + i * MINUTE_MS
+        ts = start_ms + i * bar_minutes * MINUTE_MS
         for s in cfg.symbols:
             spec = cfg.symbol_specs[s]
             r = betas.get(s, 1.0) * lead_ret + (0 if s == cfg.leader else rng.gauss(0, vol * 0.5))
@@ -159,6 +161,6 @@ def synthetic(cfg: Config, start_ms: int, minutes: int, seed: int = 7) -> dict[s
                 return floor_to(Decimal(repr(x)), tick)
 
             vol_d = Decimal(repr(round(v, 4)))
-            out[s].append(Bar(s, ts, MINUTE_MS, q(o), q(hi), q(lo), q(c), vol_d,
+            out[s].append(Bar(s, ts, bar_minutes * MINUTE_MS, q(o), q(hi), q(lo), q(c), vol_d,
                               Decimal(repr(round(v * buy_frac, 4)))))
     return out

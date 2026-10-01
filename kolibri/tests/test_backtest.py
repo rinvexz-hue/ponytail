@@ -35,7 +35,7 @@ def loose(cfg: Config) -> Config:
 def market() -> dict[str, list[Bar]]:
     from kolibri.core.config import load_config
 
-    return synthetic(load_config(), T0, 1440 * 5, seed=3)
+    return synthetic(load_config(), T0, 1440 * 14, seed=3)  # 4h EMA50 needs ~8.5 days before signals
 
 
 def _events(j: Journal, kind: str) -> list[tuple[int, str, str]]:

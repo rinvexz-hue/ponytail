@@ -35,10 +35,12 @@ def feat(**kw: object) -> Features:
         symbol="BTCEUR", ts=T0 + 3_600_000, warm=True, close=100.2, high=100.25, low=99.9, open=100.0, atr=0.3,
         ema9=100.1, ema21=100.0, ema50=99.5, vwap=99.95, avwap=99.95, prev_day_vwap=99.0, prev_day_high=101.5,
         prev_day_low=98.0, rsi7=45.0, rsi7_prev=40.0, rsi7_min3=38.0, rsi7_max3=45.0, rsi14=55.0, stochrsi=0.3,
-        macd_slope5=0.1, bb_upper=101.0, bb_lower=99.0, bb_mid=100.0, bw_pct=0.5, adx=30.0, rv_pct=0.5, volz=2.2,
-        bar_delta=10.0, prev_bar_delta=-5.0, cvd_div=0, taker_ratio=0.62, bias15=1, bias60=1, vwap_crosses=0,
+        macd_slope=0.1, bb_upper=101.0, bb_lower=99.0, bb_mid=100.0, bw_pct=0.5, adx=30.0, rv_pct=0.5, volz=2.2,
+        bar_delta=10.0, prev_bar_delta=-5.0, cvd_div=0, taker_ratio=0.62, bias_15m=1, bias_4h=1, vwap_crosses=0,
         bars_since_squeeze=1000, mom5_atr=0.5, swing_high=101.0, swing_low=99.5, low5=99.9, high5=100.3, gap=False,
         corr_leader=1.0, leader_mom5_atr=1.2,
+        # 4h context: uptrend, price above the 4h EMA50, next 4h resistance well above (room to run)
+        stack_4h=1, ema50_4h=99.0, adx_4h=28.0, rsi_4h=58.0, atr_4h=1.5, hi_4h=103.0, lo_4h=97.0,
     )
     return replace(base, **kw)  # type: ignore[arg-type]
 

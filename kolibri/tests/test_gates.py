@@ -54,15 +54,18 @@ def test_default_fees_block_small_targets(cfg: Config) -> None:
         ({}, Regime.RANGE, Health(), "1_regime"),
         ({}, Regime.CHAOS, Health(), "1_regime"),
         ({"low5": 98.0}, Regime.TREND_UP, Health(), "1_stop_distance"),
-        ({"bias15": -1}, Regime.TREND_UP, Health(), "2_htf"),
-        ({"bias60": -1}, Regime.TREND_UP, Health(), "2_htf"),
+        ({"bias_15m": -1}, Regime.TREND_UP, Health(), "2_htf"),
+        ({"bias_4h": -1}, Regime.TREND_UP, Health(), "2_htf"),
+        ({"stack_4h": -1}, Regime.TREND_UP, Health(), "2_htf"),
+        ({"ema50_4h": 101.0}, Regime.TREND_UP, Health(), "2_htf"),  # trend pullback below the 4h EMA50
+        ({"hi_4h": 100.6}, Regime.TREND_UP, Health(), "2_4h_room"),  # 4h resistance right overhead
         ({"symbol": "ETHEUR", "leader_mom5_atr": -1.5}, Regime.TREND_UP, Health(), "2_leader"),
         ({"spread_bps": 9.0}, Regime.TREND_UP, Health(), "3_spread"),
         ({"gap": True}, Regime.TREND_UP, Health(), "5_data_gap"),
         ({}, Regime.TREND_UP, Health(connected=False), "5_data_gap"),
         ({}, Regime.TREND_UP, Health(tick_age_s=2.5), "5_stale"),
         ({}, Regime.TREND_UP, Health(clock_drift_ms=300), "5_clock"),
-        ({"volz": 0.1, "taker_ratio": 0.5, "bar_delta": -1.0, "macd_slope5": -1.0, "leader_mom5_atr": -0.5},
+        ({"volz": 0.1, "taker_ratio": 0.5, "bar_delta": -1.0, "macd_slope": -1.0, "leader_mom5_atr": -0.5},
          Regime.TREND_UP, Health(), "score"),
     ],
 )
@@ -81,7 +84,7 @@ def test_slippage_gate_walks_the_book(cfg: Config) -> None:
 
 
 def test_net_r_gate(cfg: Config) -> None:
-    assert gate_of(_eval(cheap(cfg, **{"gates.min_net_r": "0.9"}))) == "4_net_r"
+    assert gate_of(_eval(cheap(cfg, **{"gates.min_net_r": "9"}))) == "4_net_r"
 
 
 def test_blackouts(cfg: Config) -> None:
@@ -114,7 +117,7 @@ def test_regime_classifier(cfg: Config) -> None:
     assert classify(feat(spread_bps=50.0), cfg) is Regime.CHAOS
     assert classify(feat(depth_usd=1000.0), cfg) is Regime.CHAOS
     assert classify(feat(bw_pct=0.1), cfg) is Regime.SQUEEZE
-    assert classify(feat(ema9=99.0, ema21=99.5, ema50=100.0, bias15=-1), cfg) is Regime.TREND_DOWN
+    assert classify(feat(ema9=99.0, ema21=99.5, ema50=100.0, bias_15m=-1), cfg) is Regime.TREND_DOWN
     assert classify(feat(adx=15.0, bw_pct=0.3, vwap_crosses=4), cfg) is Regime.RANGE
     assert classify(feat(adx=20.0), cfg) is Regime.NEUTRAL
 
@@ -150,3 +153,15 @@ def test_mean_reversion_target_inside_1r_exits_fully(cfg: Config) -> None:
     f = feat(close=99.2, vwap=99.4)
     c = build_candidate(f, "B_meanrev", LONG, (98.8, 99.4, False), cfg.symbol_specs["BTCEUR"], cfg)
     assert c.full_exit and c.tp1 == D("99.4") and c.tp2 is None
+
+
+def test_4h_level_sets_the_final_target(cfg: Config) -> None:
+    f = feat()
+    c = build_candidate(f, "A_pullback", LONG, (99.87, None, False), cfg.symbol_specs["ETHEUR"], cfg)
+    assert c.tp2 == D("102.97")  # 4h high 103 minus 0.1 ATR, rounded toward entry
+    beyond = feat(hi_4h=100.0)  # price already above the whole 4h range: no cap, the runner trails
+    c2 = build_candidate(beyond, "C_breakout", LONG, (99.87, None, False), cfg.symbol_specs["ETHEUR"], cfg)
+    assert c2.tp2 is None
+    mr = feat(close=99.2, vwap=101.0, hi_4h=100.5)  # mean reversion: the nearer of VWAP and the 4h level
+    c3 = build_candidate(mr, "B_meanrev", LONG, (98.6, 101.0, False), cfg.symbol_specs["ETHEUR"], cfg)
+    assert c3.tp2 == D("100.47")

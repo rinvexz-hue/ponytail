@@ -35,7 +35,8 @@ class Alert:
 SETUP_NL = {"A_pullback": "Trend-terugval", "B_meanrev": "Terug naar gemiddelde", "C_breakout": "Uitbraak",
             "D_sweep": "Stop-jacht omkering", "orphan": "Onbekende positie"}
 EXIT_NL = {"stop": "stop-loss geraakt", "trail": "meeschuivende stop", "tp1": "winstdoel", "tp2": "eindwinstdoel",
-           "time_stop": "tijdslimiet (10 min)", "exit": "handmatig gesloten", "orphan": "onbekende positie gesloten"}
+           "time_stop": "tijdslimiet (niet snel genoeg in de winst)",
+           "exit": "handmatig gesloten", "orphan": "onbekende positie gesloten"}
 
 
 def format_event(ev: DeskEvent, cfg: Config) -> Alert | None:

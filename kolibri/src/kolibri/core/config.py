@@ -51,6 +51,17 @@ class RiskCfg(_Frozen):
         return self
 
 
+class TimeframesCfg(_Frozen):
+    signal_minutes: int = Field(gt=0)
+    context_minutes: int = Field(gt=0)
+
+    @model_validator(mode="after")
+    def _nested(self) -> TimeframesCfg:
+        if self.context_minutes % self.signal_minutes or 1440 % self.context_minutes:
+            raise ValueError("context must be a multiple of signal and divide the UTC day")
+        return self
+
+
 class KillCfg(_Frozen):
     stale_data_s: float
     ws_gap_recover_s: float
@@ -72,6 +83,7 @@ class GatesCfg(_Frozen):
     funding_blackout_enabled: bool
     sessions_allowed: tuple[Literal["asia", "london", "ny", "off"], ...]
     signal_dedup_bars: int
+    min_room_r: Decimal
     btc_block_atr: float
     weights: dict[str, float]
     win_prob_prior: Decimal
@@ -197,6 +209,7 @@ class Config(_Frozen):
     state_db: str
     data_dir: str
     warmup_days: int
+    timeframes: TimeframesCfg
     risk: RiskCfg
     kill: KillCfg
     gates: GatesCfg

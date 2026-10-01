@@ -1,5 +1,5 @@
-"""Per-symbol feature engine. Fed one CLOSED 1m bar at a time; derives 5m/15m/1h bars itself,
-so higher timeframes are only visible once they have closed."""
+"""Per-symbol feature engine, top-down: fed one CLOSED signal-timeframe bar (15m) at a time, it
+aggregates its own context bars (4h) and only lets a context bar count once it has closed."""
 
 from __future__ import annotations
 
@@ -62,7 +62,7 @@ class Features:
     rsi7_max3: float
     rsi14: float
     stochrsi: float | None
-    macd_slope5: float | None
+    macd_slope: float | None
     bb_upper: float
     bb_lower: float
     bb_mid: float
@@ -74,8 +74,15 @@ class Features:
     prev_bar_delta: float
     cvd_div: int  # +1 bullish divergence (price down, cvd up), -1 bearish, 0 none
     taker_ratio: float
-    bias15: int
-    bias60: int
+    bias_15m: int  # sign of the signal-timeframe EMA50 slope
+    bias_4h: int  # sign of the context-timeframe EMA50 slope (last CLOSED context bar)
+    stack_4h: int  # +1 EMA9>21>50 on the context timeframe, -1 inverted, 0 mixed
+    ema50_4h: float
+    adx_4h: float
+    rsi_4h: float
+    atr_4h: float
+    hi_4h: float  # highest high of the last 12 closed context bars (resistance / long target)
+    lo_4h: float  # lowest low of the last 12 closed context bars (support / short target)
     vwap_crosses: int
     bars_since_squeeze: int
     mom5_atr: float  # 5-bar return in ATR units
@@ -95,14 +102,70 @@ class Features:
     leader_mom5_atr: float = 0.0
 
 
-class _HTF:
-    """Aggregates closed 1m bars into closed N-minute closes."""
+class Aggregator:
+    """Closed bars -> closed bars of a longer interval. Causal: a window is emitted on its last bar,
+    or (if that bar never came) as soon as a bar of the next window arrives, flagged incomplete."""
 
-    def __init__(self, minutes: int) -> None:
-        self.ms = minutes * MINUTE_MS
+    def __init__(self, symbol: str, interval_ms: int) -> None:
+        self.symbol, self.ms = symbol, interval_ms
+        self.acc: Bar | None = None
+        self.n = self.expected = 0
+        self.last_open = -1
 
-    def closes(self, bar: Bar) -> bool:
-        return bar.close_ts % self.ms == 0
+    def update(self, bar: Bar) -> list[tuple[Bar, bool]]:
+        if bar.open_ts <= self.last_open:
+            return []  # duplicate / out of order
+        self.last_open = bar.open_ts
+        out: list[tuple[Bar, bool]] = []
+        start = bar.open_ts - bar.open_ts % self.ms
+        if self.acc is not None and self.acc.open_ts != start:
+            out.append((self.acc, False))
+            self.acc = None
+        a = self.acc
+        if a is None:
+            self.acc = Bar(self.symbol, start, self.ms, bar.open, bar.high, bar.low, bar.close, bar.volume,
+                           bar.taker_buy_volume)
+            self.n, self.expected = 1, self.ms // bar.interval_ms
+            self.n -= bar.open_ts != start  # joined mid-window: can never be complete
+        else:
+            self.acc = Bar(self.symbol, start, self.ms, a.open, max(a.high, bar.high), min(a.low, bar.low), bar.close,
+                           a.volume + bar.volume, a.taker_buy_volume + bar.taker_buy_volume)
+            self.n += 1
+        if bar.close_ts == start + self.ms:
+            out.append((self.acc, self.n == self.expected))
+            self.acc = None
+        return out
+
+
+class Context:
+    """The higher (4h) timeframe: trend, strength and levels from CLOSED context bars only."""
+
+    def __init__(self, symbol: str, minutes: int) -> None:
+        self.agg = Aggregator(symbol, minutes * MINUTE_MS)
+        self.ema9, self.ema21, self.ema50 = EMA(9), EMA(21), EMA(50)
+        self.adx, self.atr, self.rsi = ADX(14), ATR(14), RSI(14)
+        self.highs: deque[float] = deque(maxlen=12)
+        self.lows: deque[float] = deque(maxlen=12)
+        self.bias = self.stack = 0
+
+    def update(self, bar: Bar) -> None:
+        for b, _ in self.agg.update(bar):
+            h, lo, c = float(b.high), float(b.low), float(b.close)
+            prev50 = self.ema50.value
+            e9, e21, e50 = self.ema9.update(c), self.ema21.update(c), self.ema50.update(c)
+            self.adx.update(h, lo, c)
+            self.atr.update(h, lo, c)
+            self.rsi.update(c)
+            self.highs.append(h)
+            self.lows.append(lo)
+            if prev50 is not None and e50 is not None:
+                self.bias = _sign(e50 - prev50, c * 1e-5)
+            if e9 is not None and e21 is not None and e50 is not None:
+                self.stack = 1 if e9 > e21 > e50 else -1 if e9 < e21 < e50 else 0
+
+    @property
+    def ready(self) -> bool:
+        return None not in (self.ema50.value, self.adx.value, self.atr.value, self.rsi.value)
 
 
 def _sign(x: float, eps: float) -> int:
@@ -110,7 +173,7 @@ def _sign(x: float, eps: float) -> int:
 
 
 class FeatureEngine:
-    def __init__(self, symbol: str, squeeze_pct: float = 0.15) -> None:
+    def __init__(self, symbol: str, squeeze_pct: float = 0.15, context_minutes: int = 240) -> None:
         self.symbol = symbol
         self.squeeze_pct = squeeze_pct
         self.ema9, self.ema21, self.ema50 = EMA(9), EMA(21), EMA(50)
@@ -126,11 +189,10 @@ class FeatureEngine:
         self.cvd_hist: deque[tuple[float, float]] = deque(maxlen=11)
         self.rsi7_hist: deque[float] = deque(maxlen=4)
         self.vwap_side: deque[int] = deque(maxlen=30)
-        self.returns: deque[float] = deque(maxlen=61)  # 1m log returns, for cross-asset
-        self.htf5, self.htf15, self.htf60 = _HTF(5), _HTF(15), _HTF(60)
-        self.macd5 = MACD()
-        self.ema15, self.ema60 = EMA(50), EMA(50)
-        self.bias15 = self.bias60 = 0
+        self.returns: deque[float] = deque(maxlen=61)  # bar log returns, for cross-asset
+        self.macd = MACD()
+        self.bias = 0
+        self.ctx = Context(symbol, context_minutes)
         self.day = -1
         self.day_pv = self.day_v = 0.0
         self.day_high, self.day_low = -math.inf, math.inf
@@ -181,7 +243,11 @@ class FeatureEngine:
         avwap = self.sess_pv / self.sess_v if self.sess_v else c
 
         # trend / momentum / volatility
+        prev50 = self.ema50.value
         e9, e21, e50 = self.ema9.update(c), self.ema21.update(c), self.ema50.update(c)
+        if prev50 is not None and e50 is not None:
+            self.bias = _sign(e50 - prev50, c * 1e-5)
+        self.macd.update(c)
         r7, r14, srsi = self.rsi7.update(c), self.rsi14.update(c), self.stoch.update(c)
         atr, adx, bw = self.atr.update(h, lo, c), self.adx.update(h, lo, c), self.bb.update(c)
         if r7 is not None:
@@ -224,20 +290,10 @@ class FeatureEngine:
         sides = list(self.vwap_side)
         crosses = sum(a != b for a, b in itertools.pairwise(sides))
 
-        # higher timeframes: only on the 1m bar that closes them
+        # context timeframe: only changes on the bar that closes a context bar
         self.bars.append(bar)
-        if self.htf5.closes(bar):
-            self.macd5.update(c)
-        if self.htf15.closes(bar):
-            p = self.ema15.value
-            n = self.ema15.update(c)
-            if p is not None and n is not None:
-                self.bias15 = _sign(n - p, c * 1e-5)
-        if self.htf60.closes(bar):
-            p = self.ema60.value
-            n = self.ema60.update(c)
-            if p is not None and n is not None:
-                self.bias60 = _sign(n - p, c * 1e-5)
+        self.ctx.update(bar)
+        ctx = self.ctx
 
         bars = list(self.bars)
         swing = bars[-21:-1] if len(bars) > 2 else bars
@@ -247,7 +303,7 @@ class FeatureEngine:
             None not in (e9, e21, e50, r7, r14, atr, adx, bw)
             and len(self.rsi7_hist) >= 4
             and len(self.rv_pct) >= 240
-            and self.ema15.value is not None
+            and ctx.ready
         )
         if not warm:
             self.last = None
@@ -255,6 +311,8 @@ class FeatureEngine:
         assert e9 is not None and e21 is not None and e50 is not None and r7 is not None
         assert r14 is not None and atr is not None and adx is not None
         assert self.bb.upper is not None and self.bb.lower is not None and self.bb.mid is not None
+        assert ctx.ema50.value is not None and ctx.adx.value is not None
+        assert ctx.rsi.value is not None and ctx.atr.value is not None
         book = self.book
         f = Features(
             symbol=self.symbol, ts=bar.close_ts, warm=True, close=c, high=h, low=lo, open=o, atr=atr,
@@ -264,10 +322,12 @@ class FeatureEngine:
             prev_day_low=self.prev_day[2] if self.prev_day else None,
             rsi7=r7, rsi7_prev=self.rsi7_hist[-2], rsi7_min3=min(list(self.rsi7_hist)[-3:]),
             rsi7_max3=max(list(self.rsi7_hist)[-3:]), rsi14=r14, stochrsi=srsi,
-            macd_slope5=self.macd5.slope, bb_upper=self.bb.upper, bb_lower=self.bb.lower,
+            macd_slope=self.macd.slope, bb_upper=self.bb.upper, bb_lower=self.bb.lower,
             bb_mid=self.bb.mid, bw_pct=bw_pct, adx=adx, rv_pct=rv_pct, volz=volz, bar_delta=delta,
-            prev_bar_delta=prev_delta, cvd_div=cvd_div, taker_ratio=taker_ratio, bias15=self.bias15,
-            bias60=self.bias60, vwap_crosses=crosses, bars_since_squeeze=self.bars_since_squeeze,
+            prev_bar_delta=prev_delta, cvd_div=cvd_div, taker_ratio=taker_ratio, bias_15m=self.bias,
+            bias_4h=ctx.bias, stack_4h=ctx.stack, ema50_4h=ctx.ema50.value, adx_4h=ctx.adx.value,
+            rsi_4h=ctx.rsi.value, atr_4h=ctx.atr.value, hi_4h=max(ctx.highs), lo_4h=min(ctx.lows),
+            vwap_crosses=crosses, bars_since_squeeze=self.bars_since_squeeze,
             mom5_atr=mom5 / atr if atr > 0 else 0.0,
             swing_high=max(float(b.high) for b in swing), swing_low=min(float(b.low) for b in swing),
             low5=min(float(b.low) for b in last5), high5=max(float(b.high) for b in last5), gap=gap,
@@ -280,7 +340,7 @@ class FeatureEngine:
         return f
 
     def with_cross(self, f: Features, leader: FeatureEngine) -> Features:
-        """Attach leader-relative stats (60 x 1m returns). Leader must be updated first."""
+        """Attach leader-relative stats (last 60 bar returns). Leader must be updated first."""
         n = min(len(self.returns), len(leader.returns)) - 1
         if n < 20 or leader.last is None:
             return f

@@ -5,9 +5,11 @@ had no access to Kraken). The setups are reasonable hypotheses, not validated st
 graduation pipeline exists precisely because they may not survive costs.
 
 ## Economics
-- Kraken retail spot fees (0.60–1.20 % round trip below the top tiers) are many times a typical
-  1–10 minute move; the cost gate will block nearly every scalp. Scalping on Kraken spot only
-  becomes arithmetically possible near the top fee tiers, or with a longer holding horizon.
+- Kraken retail spot fees (0.60–1.20 % round trip below the top tiers) are large even for a
+  15m/4h horizon: only trades with several percent of room to the next 4h level clear the cost
+  gate. Expect few trades, especially at the entry fee tier.
+- The 4h levels are the high/low of the last 12 closed 4h bars (2 days): a simple, untuned
+  definition of support / resistance, not a full structure analysis.
 - Expected-R per candidate uses a **prior** win probability mapped from the score
   (`win_prob_prior`, `win_prob_per_score_pt`). It is not calibrated. After paper trading, replace it
   with per-setup hit rates from the journal.
@@ -15,7 +17,7 @@ graduation pipeline exists precisely because they may not survive costs.
 
 ## Backtest realism
 - Backtests use 1m bars replayed as a 4-point path (open, adverse extreme, favourable extreme,
-  close). Real intrabar order, queue position and the 5 s entry timeout are only approximated.
+  close). Real intrabar order, queue position and the 60 s entry timeout are only approximated.
   Post-only fills require price to trade *through* the level (conservative), but adverse selection
   on fills is not modelled beyond that.
 - No historical order book: spread/slippage use per-symbol constants; book imbalance and depth

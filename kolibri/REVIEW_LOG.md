@@ -55,3 +55,15 @@ full suite green. Risk + execution coverage is enforced ≥ 85 % in CI.
 | 26 | Risk | Kraken has a minimum order size per pair (`ordermin`) besides min cost | `min_qty` in symbol config, checked in sizing and TP splitting; live start verifies it | `test_sizing_never_exceeds_risk_cap_and_respects_filters` |
 | 27 | Money | Kraken sells default to fees in the base asset, which would drift local vs exchange holdings | every order sends `oflags=fciq` (fees in EUR) | code path; `check-live` |
 | 28 | Data | Kraken candles have no taker-buy volume | history rebuilt from public trades through the live BarBuilder; live bars appended locally | `test_paper_runtime_streams_and_kills_on_stale_data` (warm-up via trades) |
+
+## Top-down 4h → 15m re-review
+
+| # | Area | Issue | Fix | Covered by |
+|---|---|---|---|---|
+| 29 | Lookahead | the 4h context must never use the forming 4h bar | context updates only on the 15m bar that closes a 4h bar | `test_4h_context_only_updates_on_closed_4h_bar`, `test_future_bars_cannot_change_the_past` |
+| 30 | Data | a 15m bar with missing 1m bars (or whose last minute never came) must not trade or vanish | aggregator emits it when the next window starts, flagged incomplete → `5_data_gap` | `test_aggregator_is_causal_and_flags_gaps` |
+| 31 | Signals | dedup counted 1m bars after the move to 15m signals | dedup in signal-timeframe bars | `test_no_short_on_spot_and_dedup` |
+| 32 | Signals | new 4h gates need both directions tested | stack / slope / EMA50 side / room each fail; baseline passes | `test_each_gate_fails`, `test_baseline_passes_every_gate_with_default_risk_config` |
+| 33 | Money | cost gate only looked at the 1R TP1 although half the position targets the 4h level | gate on the expected gross target (TP1 part + 4h-target part) | `test_default_fees_block_small_targets`, `test_net_r_gate` |
+| 34 | Tests | timing tests hard-coded 5 s / 10 min / 3 min | tests read entry timeout, time stop and cooldowns from config | `test_time_stop`, `test_entry_timeout_reprices_once_then_abandons`, `test_cooldowns` |
+| 35 | Backtest | synthetic generator trended up to ~40 %/day (unrealistic levels in demos) | drift / volatility scaled to ~3 %/day | demo screenshots |

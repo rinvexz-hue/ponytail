@@ -1,6 +1,8 @@
-# KOLIBRI — risk-first scalping desk on Kraken (BTC / ETH / SOL / XRP vs EUR)
+# KOLIBRI — risk-first top-down desk on Kraken (BTC / ETH / SOL / XRP vs EUR)
 
-Autonomous 1–10 minute scalper for large-cap crypto. It trades only when a setup fires **and**
+Autonomous intraday desk for large-cap crypto, read **top-down**: the 4-hour chart decides
+direction, trend strength and the target (next 4h high/low); the 15-minute chart only times the
+entry. Holds run from ~30 minutes to several hours. It trades only when a setup fires **and**
 every hard gate passes **and** the expected edge after fees and slippage is clearly positive.
 "No trade" is the normal output. **Paper mode is the default**; live mode refuses to start
 without `MODE=live`, `LIVE_CONFIRM=I_ACCEPT_THE_RISK` and a passing, current graduation report
@@ -11,17 +13,32 @@ bound to the exact config. No profit is claimed or implied — see [KNOWN_LIMITA
 Kraken Pro spot fees (tiers since 2026-07-09, best of 30-day volume / futures volume / assets on
 platform) make a maker-in / taker-out round trip cost:
 
-| Kraken tier | round trip | minimum TP1 (3× cost gate) |
+| Kraken tier | round trip | minimum expected target (3× cost gate) |
 |---|---|---|
 | entry (< $2.5k volume) 0.40 / 0.80 % | 1.20 % | 3.6 % |
 | $2.5k volume 0.30 / 0.60 % | 0.90 % | 2.7 % |
 | $10k volume or ~$20k on platform 0.22 / 0.38 % | 0.60 % | 1.8 % |
 | top tiers ≈ 0.06 / 0.16 % | 0.22 % | 0.66 % |
 
-A 1–10 minute move in BTC is typically 0.05–0.3 %. So at any retail Kraken tier the cost gate
-**correctly rejects almost every scalp** (`4_cost`). The desk will mostly sit flat. That is the
-system protecting you, not a bug. Config ships with the entry tier (most conservative); set your
-real tier in `config/symbols.yaml` and confirm it with `kolibri check-live`.
+The target is weighted: half the position at +1R, the rest at the 4h level. A 15m stop is
+typically 0.3–1 %, and the 4h level 2–6 % away, so trades with room to the next 4h level can clear
+the gate even at the entry tier; trades pinned under a 4h level cannot (`2_4h_room`, `4_cost`).
+"No trade" stays the most frequent output. Config ships with the entry tier (most conservative);
+set your real tier in `config/symbols.yaml` and confirm it with `kolibri check-live`.
+
+## Top-down validation (4 h → 15 m)
+
+| Layer | What it checks | Gate |
+|---|---|---|
+| 4 h direction | EMA9/21/50 stack and EMA50 slope must not oppose the trade; trend setups need price on the right side of the 4h EMA50 | `2_htf` |
+| 4 h room | the next 4h high (longs) / low (shorts) of the last 2 days must be ≥ 1.5R away | `2_4h_room` |
+| 4 h target | that 4h level (minus 0.1 ATR) is the final target; beyond the 4h range the runner trails | — |
+| 15 m regime | trend / range / squeeze / chaos on the 15m chart decides which setup may fire | `1_regime` |
+| 15 m trigger | pullback, mean-reversion, breakout or sweep on a closed 15m bar | setups A–D |
+
+A 4h bar only counts once it has closed, and a 15m bar with missing minutes is blocked by the
+data-health gate. History needs ~9 days before the first signal (4h EMA50): run `kolibri download`
+before the first start.
 
 ## Quick start
 
@@ -30,7 +47,7 @@ cd kolibri
 python3.12 -m venv .venv && . .venv/bin/activate
 pip install -e ".[dev]"
 pytest -q                              # 80+ tests: indicators vs `ta`, lookahead, chaos, parity, risk properties
-kolibri download --days 90             # Kraken public trades -> 1m bars (slow: public rate limit, resumable)
+kolibri download --days 90             # Kraken trades -> 1m bars (hours: public rate limit; resumable). Needed before the first start
 kolibri backtest --days 90
 kolibri graduate --days 90 --paper-journal data/kolibri.sqlite
 kolibri check-live                     # read-only: keys, balances, tick/lot/min size, YOUR fee tier
@@ -77,7 +94,8 @@ The same `Desk` code runs backtest, paper and live; only the price source and ad
 | polars / numpy / DuckDB+Parquet | pure-Python streaming indicators, CSV kline store, SQLite | O(1) incremental per closed bar is what live needs; identical code in backtest = parity. No extra deps. Upgrade path: Parquet if history > years. |
 | uvloop | stdlib asyncio | load is a few msgs/s; not the bottleneck |
 | typed async event bus | synchronous journal + subscribers, one runtime lock | deterministic backtests; the lock removes interleaving races that an async bus would add |
-| "reject if leverage needed" | size is **capped** at 1x notional | tight scalping stops would otherwise reject almost everything; capping keeps risk ≤ 0.25 % and never levers |
+| 1–10 minute scalping | top-down 4h context → 15m entries | Kraken fees are 0.6–1.2 % per round trip: a 1–10 min move cannot pay that; owner's choice |
+| "reject if leverage needed" | size is **capped** at 1x notional | tight stops would otherwise reject almost everything; capping keeps risk ≤ 0.25 % and never levers |
 | resting TP limit orders | synthetic TP on spot (market exit when price trades through) | Kraken spot has no reduce-only and open sells reserve balance: stop + TP cannot coexist |
 | Binance | Kraken spot, EUR pairs | owner's venue; Binance left NL in 2023 |
 | shadow-live on a testnet | `kolibri check-live` + paper on live data | Kraken has no spot testnet |

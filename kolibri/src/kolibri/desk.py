@@ -7,14 +7,15 @@ from __future__ import annotations
 
 import logging
 from collections import deque
+from dataclasses import replace
 from decimal import Decimal
 
 from kolibri.adapters.base import ExchangeAdapter
-from kolibri.analyst.analyst import Analyst, Health
-from kolibri.analyst.features import FeatureEngine, Features
+from kolibri.analyst.analyst import Analyst, Health, classify
+from kolibri.analyst.features import Aggregator, FeatureEngine, Features
 from kolibri.core.config import Config
 from kolibri.core.journal import Journal
-from kolibri.core.models import Bar, Book, ClosedTrade, Direction, Intent, Rejection
+from kolibri.core.models import MINUTE_MS, Bar, Book, ClosedTrade, Direction, Intent, Rejection
 from kolibri.executioner.executioner import Executioner
 from kolibri.risk.officer import RiskOfficer
 
@@ -26,7 +27,9 @@ class Desk:
         self.cfg, self.ex, self.j = cfg, adapter, journal
         self.analyst = Analyst(cfg)
         self.risk = RiskOfficer(cfg, journal, equity0)
-        self.engines = {s: FeatureEngine(s, cfg.regime.squeeze_pct) for s in cfg.symbols}
+        tf = cfg.timeframes
+        self.engines = {s: FeatureEngine(s, cfg.regime.squeeze_pct, tf.context_minutes) for s in cfg.symbols}
+        self.signal_aggs = {s: Aggregator(s, tf.signal_minutes * MINUTE_MS) for s in cfg.symbols}
         self.features: dict[str, Features | None] = {}
         self.books: dict[str, Book] = {}
         self.health: dict[str, Health] = {s: Health() for s in cfg.symbols}
@@ -58,21 +61,28 @@ class Desk:
         await self._handle_alarms()
 
     def _update_features(self, bars: dict[str, Bar]) -> list[str]:
+        """1m bars in; returns the symbols whose signal-timeframe (15m) bar just closed, leader first."""
         order = list(dict.fromkeys(s for s in [self.cfg.leader, *sorted(self.cfg.symbols)] if s in bars))
         lead = self.engines[self.cfg.leader]
+        closed: list[str] = []
         for sym in order:
-            f = self.engines[sym].on_bar(bars[sym])
-            if f is not None:
-                f = self.engines[sym].with_cross(f, lead)
-            self.features[sym] = f
-        return order
+            for sig_bar, complete in self.signal_aggs[sym].update(bars[sym]):
+                f = self.engines[sym].on_bar(sig_bar)
+                if f is not None:
+                    f = self.engines[sym].with_cross(f, lead)
+                    if not complete:  # minutes missing inside the 15m bar: data-health gate blocks it
+                        f = replace(f, gap=True)
+                self.features[sym] = f
+                closed.append(sym)
+        return list(dict.fromkeys(closed))
 
     def warm(self, bars: dict[str, Bar]) -> None:
-        """Historical warm-up: features only, never signals or orders."""
-        self._update_features(bars)
+        """Historical warm-up: features only, never signals or orders (regime kept for the dashboard)."""
+        for sym in self._update_features(bars):
+            self.analyst.regimes[sym] = classify(self.features[sym], self.cfg)
 
     async def on_bars(self, bars: dict[str, Bar], ts: int) -> None:
-        """One batch of closed 1m bars (same open_ts). Leader first, then fixed symbol order."""
+        """One batch of closed 1m bars (same open_ts). Analysis runs only when a 15m bar closes."""
         order = self._update_features(bars)
         equity = self.equity()
         for sym in order:

@@ -50,9 +50,9 @@ def classify(f: Features | None, cfg: Config) -> Regime:
         return Regime.CHAOS
     if f.bw_pct <= rc.squeeze_pct:
         return Regime.SQUEEZE
-    if f.adx > rc.adx_trend and f.ema9 > f.ema21 > f.ema50 and f.bias15 > 0:
+    if f.adx > rc.adx_trend and f.ema9 > f.ema21 > f.ema50 and f.bias_15m > 0:
         return Regime.TREND_UP
-    if f.adx > rc.adx_trend and f.ema9 < f.ema21 < f.ema50 and f.bias15 < 0:
+    if f.adx > rc.adx_trend and f.ema9 < f.ema21 < f.ema50 and f.bias_15m < 0:
         return Regime.TREND_DOWN
     if f.adx < rc.adx_range and f.bw_pct < 0.5 and f.vwap_crosses >= 2:
         return Regime.RANGE
@@ -161,6 +161,15 @@ def build_candidate(f: Features, setup: str, d: Direction, trig: Trigger, spec: 
         entry, stop = ceil_to(entry, spec.tick), ceil_to(stop, spec.tick)
     risk = abs(entry - stop)
     tp1 = entry + s * risk
+    # Final target comes from the 4h picture: the next 4h level, set a hair in front of it.
+    # Mean reversion keeps its VWAP target unless the 4h level is closer. No level ahead (price beyond
+    # the 4h range) = no fixed target: the runner trails.
+    level = f.hi_4h if d is LONG else f.lo_4h
+    level_ahead = (level - f.close) * s > 0
+    in_front = level - s * 0.1 * f.atr
+    if level_ahead:
+        nearer = min if d is LONG else max
+        target = in_front if target is None else nearer(target, in_front)
     tp2 = Decimal(repr(target)) if target is not None else None
     full_exit = tp2 is not None and (tp2 - entry) * s < risk  # target inside 1R: exit all there
     if tp2 is not None and full_exit:
@@ -179,14 +188,14 @@ def score(f: Features, c: Candidate, cfg: Config) -> tuple[float, dict[str, floa
     trending = c.setup in ("A_pullback", "C_breakout")
     comp = {
         "trend": (
-            sum((s * (f.ema9 - f.ema21) > 0, s * (f.ema21 - f.ema50) > 0, s * f.bias15 > 0, s * f.bias60 >= 0))
-            / 4
+            sum((s * (f.ema9 - f.ema21) > 0, s * (f.ema21 - f.ema50) > 0, s * f.bias_15m > 0, s * f.stack_4h > 0,
+                 s * f.bias_4h > 0)) / 5
             if trending
             else 0.5
         ),
         "momentum": (
             (1.0 if s * (f.rsi7 - f.rsi7_prev) > 0 else 0.0)
-            + (0.5 if f.macd_slope5 is None else 1.0 if s * f.macd_slope5 > 0 else 0.0)
+            + (0.5 if f.macd_slope is None else 1.0 if s * f.macd_slope > 0 else 0.0)
         )
         / 2,
         "volume": clamp(f.volz / 2),
@@ -274,7 +283,8 @@ class Analyst:
         if c.direction is SHORT and not cfg.venue_cfg.supports_short:
             return rej("0_venue_no_short", "venue does not support shorts")
         key = (c.symbol, c.setup, c.direction)
-        if c.ts - self.last_emit.get(key, -(10**15)) < g.signal_dedup_bars * MINUTE_MS:
+        bar_ms = cfg.timeframes.signal_minutes * MINUTE_MS
+        if c.ts - self.last_emit.get(key, -(10**15)) < g.signal_dedup_bars * bar_ms:
             return rej("0_dedup", "same signal fired recently")
         # 1. regime
         if not regime_allows(c.setup, c.direction, regime, f, cfg):
@@ -282,9 +292,16 @@ class Analyst:
         risk = abs(c.entry - c.stop)
         if risk <= 0 or risk > cfg.strategy.stop_atr_max * c.atr:
             return rej("1_stop_distance", f"stop {risk / c.atr:.2f} ATR")
-        # 2. higher timeframe + leader alignment
-        if not c.htf_exempt and (s * f.bias15 < 0 or s * f.bias60 < 0):
-            return rej("2_htf", f"bias15={f.bias15} bias60={f.bias60}")
+        # 2. top-down: the 4h picture must not oppose the trade, and must leave room to the next level
+        if not c.htf_exempt:
+            trending = c.setup in ("A_pullback", "C_breakout")
+            if s * f.bias_4h < 0 or s * f.stack_4h < 0 or (trending and s * (f.close - f.ema50_4h) < 0):
+                return rej("2_htf", f"4h bias={f.bias_4h} stack={f.stack_4h} vs ema50_4h={f.ema50_4h:.6g}")
+            if s * f.bias_15m < 0:
+                return rej("2_htf", f"15m bias={f.bias_15m}")
+        level = Decimal(repr(f.hi_4h if c.direction is LONG else f.lo_4h))
+        if (level - c.entry) * s > 0 and (level - c.entry) * s < g.min_room_r * risk:
+            return rej("2_4h_room", f"4h level {level} only {(level - c.entry) * s / risk:.2f}R away")
         if c.symbol != cfg.leader and s * f.leader_mom5_atr < -g.btc_block_atr:
             return rej("2_leader", f"leader mom5={f.leader_mom5_atr:.2f} ATR")
         # 3. spread + slippage for our size
@@ -302,16 +319,16 @@ class Analyst:
         # 4. cost gate: maker entry + taker exit + exit slippage, both legs
         v = cfg.venue_cfg
         cost = c.entry * v.maker + c.entry * v.taker + c.entry * bps(slip)
-        gross = abs(c.tp1 - c.entry)
+        frac = cfg.strategy.tp1_fraction
+        tp1_r = abs(c.tp1 - c.entry) / risk
+        rest_r = (abs(c.tp2 - c.entry) / risk) if c.tp2 is not None else cfg.strategy.runner_expected_r
+        reward = tp1_r if c.full_exit else frac * tp1_r + (1 - frac) * rest_r  # expected gross R if it works
+        gross = reward * risk  # the gross target distance, weighted over the TP1 part and the 4h target part
         if gross < g.cost_multiple * cost:
-            return rej("4_cost", f"target {gross} < {g.cost_multiple}x cost {cost:.6f}")
+            return rej("4_cost", f"target {gross:.6g} < {g.cost_multiple}x cost {cost:.6g}")
         cost_r = cost / risk
         p = min(Decimal("0.9"), max(Decimal("0.05"),
                 g.win_prob_prior + g.win_prob_per_score_pt * Decimal(repr(sc - g.score_threshold))))
-        frac = cfg.strategy.tp1_fraction
-        tp1_r = gross / risk
-        rest_r = (abs(c.tp2 - c.entry) / risk) if c.tp2 is not None else cfg.strategy.runner_expected_r
-        reward = tp1_r if c.full_exit else frac * tp1_r + (1 - frac) * rest_r
         exp_r = p * reward - (1 - p) - cost_r
         if exp_r < g.min_net_r:
             return rej("4_net_r", f"E[R]={exp_r:.3f}")

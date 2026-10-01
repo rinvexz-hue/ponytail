@@ -85,7 +85,7 @@ dl.glossary dt { font-weight: 700; } dl.glossary dd { margin: 2px 0 0; color: va
 </head>
 <body>
 <header>
-  <div class="brand"><b>KOLI<span>BRI</span></b><small>scalping desk · <span id="venue">Kraken</span> · BTC · ETH · SOL · XRP</small></div>
+  <div class="brand"><b>KOLI<span>BRI</span></b><small>top-down desk · 4 uur → 15 min · <span id="venue">Kraken</span> · BTC · ETH · SOL · XRP</small></div>
   <span id="mode" class="chip neutral" title="Paper = gesimuleerd geld, Live = echt geld">—</span>
   <span id="halt" class="chip neutral" title="Mag het systeem nieuwe trades openen?">—</span>
   <div class="actions">
@@ -107,9 +107,9 @@ dl.glossary dt { font-weight: 700; } dl.glossary dd { margin: 2px 0 0; color: va
 
   <section class="wide">
     <h2>Markten nu</h2>
-    <p class="lead">Per munt: in wat voor markt we zitten en wat er op dit moment een nieuwe trade tegenhoudt. "Geen signaal" is normaal: het systeem handelt alleen als alle controles slagen.</p>
+    <p class="lead">Top-down per munt: eerst de 4-uurs grafiek (richting en ruimte tot de volgende top/bodem), dan de 15-minuten grafiek (marktfase en instapsignaal). "Geen signaal" is normaal: er wordt alleen gehandeld als beide tijdframes het eens zijn en alle controles slagen.</p>
     <div class="scroll"><table>
-      <thead><tr><th>Munt</th><th>Marktfase</th><th>Waarom (nog) geen trade</th><th>Datafeed</th><th>Laatste data</th><th>Herverbindingen</th></tr></thead>
+      <thead><tr><th>Munt</th><th>4 uur · richting</th><th>4 uur · ruimte</th><th>15 min · marktfase</th><th>Waarom (nog) geen trade</th><th>Datafeed</th><th>Laatste data</th></tr></thead>
       <tbody id="syms"></tbody></table></div>
   </section>
 
@@ -155,7 +155,8 @@ dl.glossary dt { font-weight: 700; } dl.glossary dd { margin: 2px 0 0; color: va
     <h2>Begrippen</h2>
     <dl class="glossary">
       <div><dt>R (risico-eenheid)</dt><dd>Het bedrag dat je verliest als de stop-loss geraakt wordt. Per trade maximaal <span class="lim-risk">0,25</span>% van het vermogen.</dd></div>
-      <div><dt>Marktfase</dt><dd>Trend omhoog/omlaag, zijwaarts, rustig (squeeze) of te onrustig. Elke strategie werkt alleen in bepaalde fases.</dd></div>
+      <div><dt>Top-down (4 uur → 15 min)</dt><dd>De 4-uurs grafiek bepaalt de richting en het koersdoel (de volgende 4-uurs top of bodem). De 15-minuten grafiek bepaalt alleen het instapmoment. Een 4-uurs candle telt pas mee als hij gesloten is.</dd></div>
+      <div><dt>Marktfase (15 min)</dt><dd>Trend omhoog/omlaag, zijwaarts, rustig (squeeze) of te onrustig. Elke strategie werkt alleen in bepaalde fases.</dd></div>
       <div><dt>Terugval (drawdown)</dt><dd>Hoeveel procent het vermogen onder zijn hoogste punt staat. Bij de grens stopt het systeem.</dd></div>
       <div><dt>Deelwinst</dt><dd>Bij +1R wordt de helft verkocht en schuift de stop naar instapprijs + kosten: die trade kan dan niet meer verliezen.</dd></div>
       <div><dt>Paper</dt><dd>Oefenmodus met gesimuleerd geld en echte koersen. Live kan pas na het slagen van het graduatierapport.</dd></div>
@@ -167,7 +168,7 @@ dl.glossary dt { font-weight: 700; } dl.glossary dd { margin: 2px 0 0; color: va
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const nl = (x, d = 2) => (x == null || isNaN(x)) ? "—" : Number(x).toLocaleString("nl-NL", {minimumFractionDigits: d, maximumFractionDigits: d});
-const signed = (x, d = 2) => (x == null || isNaN(x)) ? "—" : Math.abs(x) < 0.5 * 10 ** -d ? nl(0, d) : (x > 0 ? "+" : "") + nl(x, d);
+const signed = (x, d = 2) => (x == null || isNaN(x)) ? "—" : Math.abs(x) < 0.5 * 10 ** -d ? nl(0, d) : (x > 0 ? "+" : "−") + nl(Math.abs(x), d);
 const cls = (x) => x > 0 ? "pos" : x < 0 ? "neg" : "";
 
 const REGIME = {
@@ -180,6 +181,13 @@ const REGIME_HELP = {
   SQUEEZE: "weinig beweging, uitbraak mogelijk", CHAOS: "geen nieuwe trades tot het kalmeert",
   NEUTRAL: "wachten op een duidelijke fase", WARMUP: "nog te weinig historie verzameld",
 };
+const trend4h = (c) => {
+  if (!c) return ["Opwarmen", "neutral", "nog geen 4-uurs historie"];
+  const strength = c.adx_4h >= 25 ? "sterke" : "zwakke";
+  if (c.stack_4h > 0 && c.bias_4h > 0) return ["Omhoog", "good", `${strength} trend · ADX ${nl(c.adx_4h, 0)} · alleen kopen`];
+  if (c.stack_4h < 0 && c.bias_4h < 0) return ["Omlaag", "attn", `${strength} trend · ADX ${nl(c.adx_4h, 0)} · geen koop-trades met de trend mee`];
+  return ["Geen duidelijke trend", "neutral", "4 uur blokkeert niets, maar geeft ook geen extra punten"];
+};
 const SETUP = { A_pullback: "Trend-terugval", B_meanrev: "Terug naar gemiddelde", C_breakout: "Uitbraak",
   D_sweep: "Stop-jacht omkering", orphan: "Onbekende positie" };
 const GATE = {
@@ -189,7 +197,8 @@ const GATE = {
   "0_dedup": ["Signaal net al gegeven", "voorkomt dubbele trades", "neutral"],
   "1_regime": ["Past niet bij marktfase", "strategie hoort bij andere fase", "attn"],
   "1_stop_distance": ["Stop-loss te ver weg", "risico per munt te groot", "attn"],
-  "2_htf": ["Grotere trend wijst andere kant op", "15 min / 1 uur tegen", "attn"],
+  "2_htf": ["4-uurs trend wijst andere kant op", "niet tegen de grote trend in", "attn"],
+  "2_4h_room": ["Te weinig ruimte tot 4-uurs top/bodem", "minder dan 1,5R tot de volgende weerstand", "attn"],
   "2_leader": ["Bitcoin beweegt tegen", "BTC trekt de markt de andere kant op", "attn"],
   "3_spread": ["Spread te groot", "verschil bied/laat te hoog", "attn"],
   "3_slippage": ["Orderboek te dun", "onze order zou de prijs verschuiven", "attn"],
@@ -301,12 +310,16 @@ function render(s) {
   const syms = Object.keys({...s.regimes, ...s.health}).sort();
   $("syms").innerHTML = syms.map(k => {
     const h = s.health[k] || {}, [rn, rc] = REGIME[s.regimes[k]] || ["—", "neutral"], [gn, gh, gc] = gate(s.gates[k]);
+    const c = (s.context || {})[k], [tn, tc, th] = trend4h(c);
+    const room = c ? `↑ ${signed((c.hi_4h / c.close - 1) * 100)}%<small>tot 4u-top ${nl(c.hi_4h, c.hi_4h < 10 ? 4 : 1)}</small>`
+      + `↓ ${signed((c.lo_4h / c.close - 1) * 100)}%<small>tot 4u-bodem ${nl(c.lo_4h, c.lo_4h < 10 ? 4 : 1)}</small>` : "—";
     return `<tr><td><b>${esc(k.replace(QUOTE, ""))}</b><small>${esc(k)}</small></td>
+      <td><span class="chip ${tc}">${tn}</span><small>${esc(th)}</small></td><td>${room}</td>
       <td><span class="chip ${rc}">${rn}</span><small>${esc(REGIME_HELP[s.regimes[k]] || "")}</small></td>
       <td><span class="chip ${gc}">${esc(gn)}</span><small>${esc(gh)}</small></td>
       <td><span class="chip ${h.connected ? "good" : "crit"}">${h.connected ? "Verbonden" : "Verbroken"}</span></td>
-      <td>${h.tick_age_s == null ? "—" : nl(h.tick_age_s, 1) + " s geleden"}</td><td>${h.reconnects ?? 0}</td></tr>`;
-  }).join("") || `<tr><td colspan="6" class="muted">Wachten op marktdata…</td></tr>`;
+      <td>${h.tick_age_s == null ? "—" : nl(h.tick_age_s, 1) + " s geleden"}</td></tr>`;
+  }).join("") || `<tr><td colspan="7" class="muted">Wachten op marktdata…</td></tr>`;
 
   $("pos").innerHTML = (s.positions || []).length ? s.positions.map(p => `<tr>
       <td><b>${esc(p.symbol.replace(QUOTE, ""))}</b></td>
@@ -314,7 +327,7 @@ function render(s) {
       <td>${esc(SETUP[p.setup] || p.setup)}</td><td>${esc(p.qty)}</td><td>${esc(p.entry)}</td>
       <td>${esc(p.stop)}<small>staat bij de beurs</small></td><td>${esc(p.mark)}</td>
       <td class="${cls(p.r)}"><b>${signed(p.r)} R</b></td>
-      <td>${p.tp1_done ? "Ja<small>stop op instap + kosten</small>" : "Nog niet<small>bij +1R</small>"}</td><td>${age(p.age_s)}</td></tr>`).join("")
+      <td>${p.tp1_done ? "Ja<small>stop op instap + kosten</small>" : "Nog niet<small>bij +1R, rest naar 4u-doel</small>"}</td><td>${age(p.age_s)}</td></tr>`).join("")
     : `<tr><td colspan="10" class="muted">Geen open posities. Niet handelen is ook een geldige keuze.</td></tr>`;
 
   chart(s.curve);

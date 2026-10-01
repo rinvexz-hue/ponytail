@@ -85,10 +85,11 @@ def test_gap_through_stop_fills_at_worse_price(cfg: Config) -> None:
 def test_time_stop(cfg: Config) -> None:
     h = Harness(cfg)
     filled_long(h)
-    h.tick(S, T0 + 300_000, "100.20")
+    limit = cfg.strategy.time_stop_s * 1000
+    h.tick(S, T0 + limit // 2, "100.20")
     assert S in h.exe.positions
-    h.tick(S, T0 + 601_000, "100.20")  # 10 min, MFE 0.2R < 0.5R -> market exit
-    h.tick(S, T0 + 602_000, "100.20")
+    h.tick(S, T0 + limit + 1_000, "100.20")  # time limit reached with MFE 0.2R < 0.5R -> market exit
+    h.tick(S, T0 + limit + 2_000, "100.20")
     assert h.closed and h.closed[0].exit_reason == "time_stop"
 
 
@@ -108,12 +109,13 @@ def test_entry_timeout_reprices_once_then_abandons(cfg: Config) -> None:
     h = Harness(cfg)
     h.tick(S, T0 - 1000, "100.05")
     h.open(intent(atr="1"), touch="100.00")
-    h.tick(S, T0 + 5_000, "100.05")  # timeout -> cancel, near -> reprice pending
-    h.tick(S, T0 + 5_200, "100.05")  # cancel effective -> new entry at 100.04
+    to = int(cfg.execution.entry_timeout_s * 1000)
+    h.tick(S, T0 + to, "100.05")  # timeout -> cancel, near -> reprice pending
+    h.tick(S, T0 + to + 200, "100.05")  # cancel effective -> new entry one tick under the last print
     entries = [o for o in h.exe.orders.values() if o.purpose == "entry"]
     assert len(entries) == 2 and entries[1].price == D("99.95")
-    h.tick(S, T0 + 10_300, "100.05")
-    h.tick(S, T0 + 10_500, "100.05")
+    h.tick(S, T0 + 2 * to + 300, "100.05")
+    h.tick(S, T0 + 2 * to + 500, "100.05")
     assert S not in h.exe.entries and S not in h.exe.positions
     assert h.j.query("entry_abandoned")
 
@@ -122,8 +124,9 @@ def test_no_chasing_when_price_ran_away(cfg: Config) -> None:
     h = Harness(cfg)
     h.tick(S, T0 - 1000, "100.05")
     h.open(intent(atr="1"), touch="100.00")
-    h.tick(S, T0 + 5_000, "100.60")  # moved > 0.3 ATR -> abandon, no reprice
-    h.tick(S, T0 + 5_200, "100.60")
+    to = int(cfg.execution.entry_timeout_s * 1000)
+    h.tick(S, T0 + to, "100.60")  # moved > 0.3 ATR -> abandon, no reprice
+    h.tick(S, T0 + to + 200, "100.60")
     assert len([o for o in h.exe.orders.values() if o.purpose == "entry"]) == 1
     assert S not in h.exe.entries
 
@@ -132,9 +135,11 @@ def test_fill_after_cancel_race_still_protected(cfg: Config) -> None:
     h = Harness(cfg)
     h.tick(S, T0 - 1000, "100.05")
     h.open(intent(atr="1"), touch="100.00")
-    h.tick(S, T0 + 5_000, "100.50")  # we cancel (abandon) ...
-    h.tick(S, T0 + 5_100, "99.90")  # ... but it fills before the cancel lands
-    h.tick(S, T0 + 5_400, "99.95")
+    to = int(cfg.execution.entry_timeout_s * 1000)
+    h.tick(S, T0 + to, "100.50")  # we cancel (abandon) ...
+    assert h.exe.canceling
+    h.tick(S, T0 + to + 100, "99.90")  # ... but it fills before the cancel lands
+    h.tick(S, T0 + to + 400, "99.95")
     assert S in h.exe.positions and not h.alarms
     assert h.stop_order(S) and h.exe.positions[S].tp_qty == D("0.5")  # stop rests, synthetic TP1 armed
 

@@ -309,6 +309,11 @@ class Runtime:
             "day_pnl_pct": round((eq / float(risk.day_start) - 1) * 100, 3) if risk.day_start > 0 else 0.0,
             "halted": risk.halted(now), "positions": positions,
             "regimes": {s: r.value for s, r in d.analyst.regimes.items()},
+            "context": {s: {"bias_4h": f.bias_4h, "stack_4h": f.stack_4h, "close": f.close, "hi_4h": f.hi_4h,
+                            "lo_4h": f.lo_4h, "adx_4h": round(f.adx_4h, 1)}
+                        for s, f in d.features.items() if f is not None},
+            "timeframes": {"signal": self.cfg.timeframes.signal_minutes,
+                           "context": self.cfg.timeframes.context_minutes},
             "gates": dict(d.analyst.gate_status),
             "curve": [[t, float(e)] for t, e in curve[:: max(1, len(curve) // 400)]],
             "curve_max_dd_pct": round(max_drawdown_pct(e for _, e in curve), 3),

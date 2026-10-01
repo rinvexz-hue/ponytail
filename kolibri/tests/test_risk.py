@@ -131,16 +131,17 @@ def _trade(pnl: str, reason: str = "stop", ts: int = T0) -> ClosedTrade:
 
 
 def test_cooldowns() -> None:
-    r = officer()
+    r, rk = officer(), CFG.risk
     r.on_trade_closed(_trade("-1"))
     res = r.review(intent(), [], {}, {}, T0 + 60_000)
     assert isinstance(res, Rejection) and res.gate == "7_cooldown"
-    assert not isinstance(r.review(intent(), [], {}, {}, T0 + 181_000), Rejection)
+    assert not isinstance(r.review(intent(), [], {}, {}, T0 + rk.stopout_cooldown_s * 1000 + 1), Rejection)
     for _ in range(3):
         r.on_trade_closed(_trade("-1", reason="time_stop"))
-    res = r.review(intent(sym="ETHEUR"), [], {}, {}, T0 + 30 * 60_000)
+    res = r.review(intent(sym="ETHEUR"), [], {}, {}, T0 + rk.loss_streak_cooldown_s * 500)
     assert isinstance(res, Rejection) and res.detail == "global loss-streak cooldown"
-    assert not isinstance(r.review(intent(sym="ETHEUR"), [], {}, {}, T0 + 61 * 60_000), Rejection)
+    after = T0 + rk.loss_streak_cooldown_s * 1000 + 1
+    assert not isinstance(r.review(intent(sym="ETHEUR"), [], {}, {}, after), Rejection)
 
 
 def test_config_consistency_is_enforced() -> None:

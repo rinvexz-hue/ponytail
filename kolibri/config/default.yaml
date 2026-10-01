@@ -9,7 +9,13 @@ leader: BTCEUR
 paper_equity: "10000"
 state_db: data/kolibri.sqlite
 data_dir: data/history
-warmup_days: 3
+warmup_days: 12               # 4h EMA50 needs ~8.5 days of history; run `kolibri download` first
+
+# Top-down: the context timeframe decides direction, strength and targets; the signal timeframe
+# times the entry. Bars are still built per minute (execution, stops, data health).
+timeframes:
+  signal_minutes: 15
+  context_minutes: 240
 
 risk:
   risk_per_trade_pct: "0.25"    # % of equity lost if the stop fills (fees + slippage included)
@@ -22,10 +28,10 @@ risk:
   daily_loss_pct: "2"           # -> flatten, halt until next UTC day
   weekly_loss_pct: "5"          # -> halt until manual re-arm
   max_drawdown_pct: "8"         # from equity peak -> halt until manual re-arm
-  max_trades_per_day: 40
-  stopout_cooldown_s: 180
+  max_trades_per_day: 12
+  stopout_cooldown_s: 1800      # 2 signal bars
   loss_streak: 4
-  loss_streak_cooldown_s: 3600
+  loss_streak_cooldown_s: 14400 # one context bar
 
 kill:
   stale_data_s: 3
@@ -46,8 +52,9 @@ gates:
   funding_blackout_min: 2
   funding_blackout_enabled: false   # only meaningful on perps
   sessions_allowed: [asia, london, ny, "off"]   # quoted: bare off is YAML false
-  signal_dedup_bars: 5
-  btc_block_atr: 1.0            # alt long blocked if leader 5-bar return < -1.0 leader ATR (mirror for shorts)
+  signal_dedup_bars: 4          # signal bars (= 1 hour)
+  min_room_r: "1.5"             # room to the next 4h level (resistance for longs) must be >= 1.5R
+  btc_block_atr: 1.0            # alt long blocked if leader 5-bar (75 min) return < -1.0 ATR (mirror for shorts)
   weights:                      # fixed constants, never tuned online
     trend: 20
     momentum: 15
@@ -74,7 +81,7 @@ strategy:
   runner_expected_r: "1.0"   # conservative prior for the ATR-trailed runner
   trail_atr: "1.5"
   trail_step_atr: "0.1"
-  time_stop_s: 600
+  time_stop_s: 10800            # 3 h without reaching +0.5R -> exit
   time_stop_min_r: "0.5"
   tp1_fraction: "0.5"
   rsi_reset_low: 35
@@ -85,7 +92,7 @@ strategy:
 
 execution:
   latency_ms: 150
-  entry_timeout_s: 5
+  entry_timeout_s: 60
   max_chase_atr: "0.3"
   reconcile_s: 30
   order_rate_per_min: 30        # Kraken's per-pair order counter is small (and cancels < 5 s cost extra); 50 % headroom
