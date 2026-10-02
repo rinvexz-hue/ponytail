@@ -87,6 +87,7 @@ class GatesCfg(_Frozen):
     btc_block_atr: float
     weights: dict[str, float]
     win_prob_prior: Decimal
+    win_prob_by_setup: dict[str, Decimal] = Field(default_factory=dict)  # calibrated by `kolibri optimize`
     win_prob_per_score_pt: Decimal
 
     @model_validator(mode="after")
@@ -132,6 +133,7 @@ class StrategyCfg(_Frozen):
 
 
 class ExecutionCfg(_Frozen):
+    canary_notional: Decimal = Decimal(25)  # max order value (quote) while graduation only allows "canary"
     latency_ms: int
     entry_timeout_s: float
     max_chase_atr: Decimal
@@ -166,6 +168,9 @@ class GraduationCfg(_Frozen):
     mc_runs: int
     mc_max_dd_pct: Decimal
     min_paper_days: int
+    canary_min_paper_trades: int = 10  # stage 1 (canary): OOS proof + paper is not negative
+    paper_min_trades: int = 30  # stage 2 (live): paper must also meet the OOS quality bars
+    canary_min_live_trades: int = 10  # stage 2 also needs this many clean canary trades
 
 
 class VenueCfg(_Frozen):
@@ -243,6 +248,11 @@ class Config(_Frozen):
         return self
 
     @property
+    def state_path(self) -> str:
+        """Paper and live keep separate journals (halts, equity anchors, trades)."""
+        return self.state_db.format(mode=self.mode)
+
+    @property
     def venue_cfg(self) -> VenueCfg:
         return self.venues[self.venue]
 
@@ -275,8 +285,17 @@ def with_overrides(cfg: Config, overrides: dict[str, Any]) -> Config:
     return Config.model_validate(data)
 
 
+def _deep_merge(base: dict[str, Any], over: dict[str, Any]) -> dict[str, Any]:
+    for k, v in over.items():
+        base[k] = _deep_merge(dict(base[k]), v) if isinstance(v, dict) and isinstance(base.get(k), dict) else v
+    return base
+
+
 def load_config(config_dir: Path = CONFIG_DIR, **overrides: Any) -> Config:
     raw = yaml.safe_load((config_dir / "default.yaml").read_text())
+    local = config_dir / "local.yaml"  # your overrides (e.g. written by `kolibri optimize --apply`)
+    if local.exists():
+        raw = _deep_merge(raw, yaml.safe_load(local.read_text()) or {})
     sym = yaml.safe_load((config_dir / "symbols.yaml").read_text())
     cal_path = config_dir / "events_calendar.yaml"
     events = (yaml.safe_load(cal_path.read_text()) or {}).get("events", []) if cal_path.exists() else []

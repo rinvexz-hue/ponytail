@@ -37,22 +37,24 @@ class LiveRefused(SystemExit):
     pass
 
 
-def assert_mode_allowed(cfg: Config) -> None:
-    """Hard rule 1: live needs MODE=live, LIVE_CONFIRM and a passing, current graduation report."""
+def assert_mode_allowed(cfg: Config) -> str | None:
+    """Hard rule 1: live needs MODE=live, LIVE_CONFIRM and a current graduation report.
+    Returns the unlocked stage: "canary" (orders capped) or "live"; None in paper mode."""
     if cfg.mode != "live":
-        return
+        return None
     if os.environ.get("LIVE_CONFIRM") != LIVE_CONFIRM:
         raise LiveRefused(f"refusing live: set LIVE_CONFIRM={LIVE_CONFIRM}")
-    ok, why = check_graduation(cfg)
-    if not ok:
+    stage, why = check_graduation(cfg)
+    if stage is None:
         raise LiveRefused(f"refusing live: {why}")
+    return stage
 
 
 class Runtime:
     def __init__(self, cfg: Config, exchange: Any = None, adapter: ExchangeAdapter | None = None) -> None:
-        assert_mode_allowed(cfg)
+        self.stage = assert_mode_allowed(cfg)
         self.cfg = cfg
-        self.j = Journal(cfg.state_db)
+        self.j = Journal(cfg.state_path)
         self.alerts = AlertManager(cfg)
         self.j.subscribe(self.alerts.on_event)
         if adapter is None:
@@ -67,7 +69,9 @@ class Runtime:
                 adapter.base.update({s: Decimal(q) for s, q in acct["base"].items() if s in adapter.base})
         self.adapter = adapter
         self.paper = isinstance(adapter, SimBroker)
-        self.desk = Desk(cfg, adapter, self.j, adapter.equity({}) if self.paper else cfg.paper_equity)
+        self.desk = Desk(cfg, adapter, self.j, adapter.equity({}))
+        if self.stage == "canary":
+            self.desk.risk.canary_notional = cfg.execution.canary_notional
         self.exchange = exchange
         self.builder = BarBuilder(tuple(cfg.symbols))
         self.scout: Scout | None = None
@@ -198,6 +202,11 @@ class Runtime:
             problems = await verify()
             if problems:
                 raise LiveRefused("; ".join(problems))
+        if self.j.get_state("peak_equity") is None:  # first run on this journal: anchor to real balances
+            self.desk.risk.reset_anchors(self.desk.equity(), now_ms())
+        if self.stage == "canary":
+            cap = f"{self.cfg.execution.canary_notional} {self.cfg.quote}"
+            self.j.emit("alert", now_ms(), severity="WARN", text=f"CANARY: echte orders, maximaal {cap} per order")
         # warm-up: features only, never trades on history
         per_sym = {s: await self.scout.warmup_bars(s, self.cfg.warmup_days, self.cfg.data_dir)
                    for s in self.cfg.symbols}

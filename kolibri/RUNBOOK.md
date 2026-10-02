@@ -40,6 +40,9 @@ intentional (fail closed); do not "fix" it by skipping reconciliation.
 
 ## Promotion path (never skip a stage)
 
+The operator's version, in Dutch with commands and go/stop criteria per phase, is
+[LIVE_TESTPLAN.md](LIVE_TESTPLAN.md); `kolibri preflight` shows the current position. Summary:
+
 1. `kolibri download --days 90` (hours: Kraken's public trade endpoint is rate limited; it resumes
    where it stopped) → `kolibri backtest` → `kolibri graduate` (walk-forward OOS, ±20 %
    perturbation, Monte Carlo). Fix nothing by curve-fitting; ≤ 12 tunables.
@@ -47,7 +50,9 @@ intentional (fail closed); do not "fix" it by skipping reconciliation.
    `kolibri graduate --paper-journal data/kolibri.sqlite`.
 3. Kraken has no spot testnet. Instead: `kolibri check-live` with the live keys (read-only: prints
    balances, verifies tick / lot / minimum order size and the fee tier Kraken really charges you;
-   refuses on any mismatch), while paper keeps running on live data.
+   refuses on any mismatch). Then **canary**: a report with stage `canary` lets live run with every
+   order capped at `execution.canary_notional` (25 EUR) until ≥ 10 clean canary trades unlock
+   stage `live` on the next `kolibri graduate`.
 4. Live-small: a **dedicated Kraken sub-account** holding only EUR, ≤ 10 % of intended capital.
    API key permissions: *Query funds*, *Query open/closed orders & trades*, *Create & modify
    orders*, *Cancel/close orders*, *WebSocket interface*. **Never** *Withdraw funds*. Set the key's

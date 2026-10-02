@@ -54,6 +54,7 @@ class RiskOfficer:
         self.loss_streak: int = journal.get_state("loss_streak", 0)
         self.global_cooldown_until: int = journal.get_state("global_cooldown_until", 0)
         self.cooldowns: dict[str, int] = journal.get_state("cooldowns", {})
+        self.canary_notional: Decimal | None = None  # set when graduation only unlocks the canary stage
         self._persisted_ts = 0
 
     # ---- halts -----------------------------------------------------------------------------
@@ -83,6 +84,12 @@ class RiskOfficer:
         self.week, self.week_start = utc_week(ts), self.equity
         self._persist()
         self.j.emit("risk", ts, event="rearmed")
+
+    def reset_anchors(self, equity: Decimal, ts: int) -> None:
+        """Start of a fresh journal: peak / day / week anchors at the real starting equity."""
+        self.equity = self.peak = self.day_start = self.week_start = equity
+        self.day, self.week = utc_day(ts), utc_week(ts)
+        self._persist()
 
     # ---- equity / limits -------------------------------------------------------------------
     def on_equity(self, equity: Decimal, ts: int) -> tuple[str, int | None] | None:
@@ -176,6 +183,8 @@ class RiskOfficer:
         gross_open = sum((p.qty * p.entry for p in positions), D0)
         headroom = v.max_leverage * self.equity * Decimal("0.98") - gross_open
         qty = max(D0, min(qty, floor_to(headroom / c.entry, spec.step)))
+        if self.canary_notional is not None:  # canary: real orders, deliberately tiny
+            qty = min(qty, floor_to(self.canary_notional / c.entry, spec.step))
         if qty <= 0 or qty < spec.min_qty or qty * c.entry < spec.min_notional:
             return veto("8_risk_min_notional", f"qty {qty}")
         notional = qty * c.entry

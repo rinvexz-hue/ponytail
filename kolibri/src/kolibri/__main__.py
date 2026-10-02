@@ -4,7 +4,9 @@
   kolibri download --days 90       # Kraken public trades -> 1m bars in data/history (slow, resumable)
   kolibri check-live               # read-only: Kraken keys, balances, filters and YOUR fee tier vs config
   kolibri backtest [--days N | --synthetic N]
-  kolibri graduate [--paper-journal data/kolibri.sqlite] [--optimize] [--synthetic N]
+  kolibri optimize --days 120 [--apply]   # robust parameter search + win-rate calibration (holdout-checked)
+  kolibri graduate --days 120      # OOS + paper (+ canary) evidence -> stage: none / canary / live
+  kolibri preflight                # checklist: where am I on the way to live, what is the next step
   kolibri rearm                    # clear a manual halt (after you know why it tripped)
 """
 
@@ -15,6 +17,7 @@ import asyncio
 import json
 import logging
 import time
+from pathlib import Path
 
 from kolibri.core.config import load_config
 from kolibri.core.models import MINUTE_MS, Bar
@@ -40,13 +43,17 @@ def main(argv: list[str] | None = None) -> None:
     sub.add_parser("run")
     d = sub.add_parser("download")
     d.add_argument("--days", type=int, default=180)
-    for name in ("backtest", "graduate"):
+    for name in ("backtest", "graduate", "optimize"):
         b = sub.add_parser(name)
         b.add_argument("--days", type=int)
         b.add_argument("--synthetic", type=int, help="use N days of synthetic data (demo only, no edge)")
         if name == "graduate":
-            b.add_argument("--paper-journal")
+            b.add_argument("--paper-journal", help="default: the paper journal of this config")
+            b.add_argument("--live-journal", help="default: the live (canary) journal of this config")
             b.add_argument("--optimize", action="store_true")
+        if name == "optimize":
+            b.add_argument("--apply", action="store_true", help="write accepted values to config/local.yaml")
+    sub.add_parser("preflight")
     sub.add_parser("rearm")
     sub.add_parser("check-live")
     a = p.parse_args(argv)
@@ -87,16 +94,32 @@ def main(argv: list[str] | None = None) -> None:
                          default=str))
     elif a.cmd == "graduate":
         from kolibri.auditor.graduation import build_report, write_report
+        from kolibri.core.config import with_overrides
 
-        rep = build_report(cfg, _bars(a.days, a.synthetic), a.paper_journal, a.optimize)
+        paper = a.paper_journal or with_overrides(cfg, {"mode": "paper"}).state_path
+        live = a.live_journal or with_overrides(cfg, {"mode": "live"}).state_path
+        rep = build_report(cfg, _bars(a.days, a.synthetic), paper, a.optimize, live)
         write_report(rep, cfg.graduation.report_path)
         for c in rep["checks"]:
-            print(f"{'PASS' if c['pass'] else 'FAIL'}  {c['name']:<32} {c['value']} {c['op']} {c['threshold']}")
+            print(f"{'PASS' if c['pass'] else 'FAIL'}  [{c['stage']:<6}] {c['name']:<34} {c['value']} {c['op']} "
+                  f"{c['threshold']}")
         print(f"\nVERDICT: {rep['verdict']}  -> {cfg.graduation.report_path}")
+    elif a.cmd == "optimize":
+        from kolibri.auditor.optimize import apply_overrides, optimize, write_optimize_report
+
+        rep = optimize(cfg, _bars(a.days, a.synthetic))
+        write_optimize_report(rep, "data/optimize_report.json")
+        print(Path("data/optimize_report.md").read_text())
+        if a.apply and rep["overrides"]:
+            print(f"written: {apply_overrides(rep['overrides'])}  -> now re-run: kolibri graduate")
+    elif a.cmd == "preflight":
+        from kolibri.auditor.preflight import checklist, render
+
+        print(render(checklist(cfg)))
     elif a.cmd == "rearm":
         from kolibri.core.journal import Journal
 
-        j = Journal(cfg.state_db)
+        j = Journal(cfg.state_path)
         print("previous halt:", j.get_state("halt"))
         for key in ("halt", "peak_equity", "week_anchor"):  # drawdown / week re-anchor at current equity
             j.set_state(key, None)

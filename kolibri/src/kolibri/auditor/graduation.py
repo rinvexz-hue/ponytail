@@ -43,10 +43,10 @@ def _check(name: str, value: float, op: str, threshold: float) -> dict[str, Any]
             "threshold": threshold, "pass": bool(ok)}
 
 
-def _core_checks(prefix: str, st: dict[str, Any], cfg: Config) -> list[dict[str, Any]]:
+def _core_checks(prefix: str, st: dict[str, Any], cfg: Config, min_trades: int | None = None) -> list[dict[str, Any]]:
     g = cfg.graduation
     return [
-        _check(f"{prefix}.trades", st["trades"], ">=", g.min_trades),
+        _check(f"{prefix}.trades", st["trades"], ">=", g.min_trades if min_trades is None else min_trades),
         _check(f"{prefix}.profit_factor", st["profit_factor"], ">=", float(g.min_profit_factor)),
         _check(f"{prefix}.expectancy_r", st["expectancy_r"], ">=", float(g.min_expectancy_r)),
         _check(f"{prefix}.max_dd_pct", st["max_dd_pct"], "<=", float(g.max_drawdown_pct)),
@@ -104,7 +104,7 @@ def paper_trades(journal_path: str | Path) -> list[ClosedTrade]:
 
 
 def build_report(cfg: Config, bars: dict[str, list[Bar]], paper_journal: str | Path | None = None,
-                 optimize: bool = False) -> dict[str, Any]:
+                 optimize: bool = False, live_journal: str | Path | None = None) -> dict[str, Any]:
     trades, windows, curve = walk_forward(cfg, bars, optimize=optimize)
     st = summarize(trades, curve)
     checks = _core_checks("oos", st, cfg)
@@ -129,54 +129,98 @@ def build_report(cfg: Config, bars: dict[str, list[Bar]], paper_journal: str | P
             worst = min(worst, float(e))
     checks.append(_check("stability.min_expectancy_r", worst, ">", 0.0))
 
+    for c in checks:
+        c["stage"] = "canary"  # out-of-sample proof gates even the tiny-order canary stage
+    g = cfg.graduation
+
+    def curve_of(ts_: list[ClosedTrade]) -> list[tuple[int, Decimal]]:
+        out, eq = [], ts_[0].equity_before if ts_ else Decimal(0)
+        for t in ts_:
+            eq += t.pnl
+            out.append((t.closed_ts, eq))
+        return out
+
     pt = paper_trades(paper_journal) if paper_journal else []
     days = (max(t.closed_ts for t in pt) - min(t.opened_ts for t in pt)) / DAY_MS if pt else 0.0
-    checks.append(_check("paper.days", days, ">=", cfg.graduation.min_paper_days))
-    pcurve: list[tuple[int, Decimal]] = []
-    eq = pt[0].equity_before if pt else Decimal(0)
-    for t in pt:
-        eq += t.pnl
-        pcurve.append((t.closed_ts, eq))
-    checks += _core_checks("paper", summarize(pt, pcurve), cfg)
+    pst = summarize(pt, curve_of(pt))
+    canary = [_check("paper.days", days, ">=", g.min_paper_days),
+              _check("paper.trades_for_canary", len(pt), ">=", g.canary_min_paper_trades),
+              _check("paper.expectancy_not_negative", pst["expectancy_r"], ">=", 0.0)]
+    checks += [c | {"stage": "canary"} for c in canary]
+    checks += [c | {"stage": "live"} for c in _core_checks("paper", pst, cfg, g.paper_min_trades)]
 
-    passed = all(c["pass"] for c in checks)
+    lt = paper_trades(live_journal) if live_journal else []  # canary trades: tiny size, same R maths
+    lst = summarize(lt)
+    auto_kills = _auto_kills(live_journal) if live_journal else 0
+    checks += [c | {"stage": "live"} for c in (
+        _check("canary.trades", len(lt), ">=", g.canary_min_live_trades),
+        _check("canary.expectancy_not_negative", lst["expectancy_r"], ">=", 0.0),
+        _check("canary.automatic_kills", auto_kills, "<=", 0),
+    )]
+
+    stage = stage_of(checks)
+    verdict = {"live": "GRADUATED: live-small (<= 10 % of intended capital, 1x)",
+               "canary": f"CANARY ONLY: live with orders capped at {cfg.execution.canary_notional} {cfg.quote}",
+               "none": "DO NOT GO LIVE"}[stage]
     return {
         "generated_ms": int(time.time() * 1000),
         "config_fingerprint": cfg.fingerprint(),
-        "passed": passed,
-        "verdict": "GRADUATED (live-small only: <=10% of intended capital, 1x)" if passed else "DO NOT GO LIVE",
+        "stage": stage,
+        "passed": stage != "none",
+        "verdict": verdict,
         "checks": checks,
         "oos_stats": st,
         "walk_forward": windows,
         "perturbation": perturb,
         "paper_trades": len(pt),
+        "canary_trades": len(lt),
     }
+
+
+def stage_of(checks: list[dict[str, Any]]) -> str:
+    """"canary" needs every canary-stage check; "live" needs every check; else "none"."""
+    if not all(c["pass"] for c in checks if c["stage"] == "canary"):
+        return "none"
+    return "live" if all(c["pass"] for c in checks) else "canary"
+
+
+def _auto_kills(journal_path: str | Path) -> int:
+    """Kill-switch events that were not pressed by a human (those are execution problems)."""
+    if not Path(journal_path).exists():
+        return 0
+    j = Journal(journal_path)
+    n = sum(1 for e in j.query("kill") if not str(e.data.get("reason", "")).startswith("manual"))
+    j.close()
+    return n
 
 
 def write_report(report: dict[str, Any], path: str | Path) -> None:
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     Path(path).write_text(json.dumps(report, indent=2, default=str))
     lines = [f"# KOLIBRI graduation report\n\n**Verdict: {report['verdict']}**\n",
-             f"Config fingerprint `{report['config_fingerprint']}`\n", "| check | value | rule | pass |",
-             "|---|---|---|---|"]
-    lines += [f"| {c['name']} | {c['value']} | {c['op']} {c['threshold']} | {'✅' if c['pass'] else '❌'} |"
-              for c in report["checks"]]
+             f"Config fingerprint `{report['config_fingerprint']}`\n", "| stage | check | value | rule | pass |",
+             "|---|---|---|---|---|"]
+    for c in report["checks"]:
+        ok = "✅" if c["pass"] else "❌"
+        lines.append(f"| {c['stage']} | {c['name']} | {c['value']} | {c['op']} {c['threshold']} | {ok} |")
     Path(path).with_suffix(".md").write_text("\n".join(lines) + "\n")
 
 
-def check_graduation(cfg: Config, path: str | Path | None = None) -> tuple[bool, str]:
+def check_graduation(cfg: Config, path: str | Path | None = None) -> tuple[str | None, str]:
+    """Returns the unlocked live stage ("canary" | "live") or None with the reason."""
     p = Path(path or cfg.graduation.report_path)
     if not p.exists():
-        return False, f"no graduation report at {p}"
+        return None, f"no graduation report at {p}"
     try:
         r = json.loads(p.read_text())
     except ValueError:
-        return False, "graduation report unreadable"
-    if not r.get("passed"):
-        return False, "graduation report says DO NOT GO LIVE"
+        return None, "graduation report unreadable"
+    stage = r.get("stage", "live" if r.get("passed") else "none")
+    if stage not in ("canary", "live"):
+        return None, "graduation report says DO NOT GO LIVE"
     if r.get("config_fingerprint") != cfg.fingerprint():
-        return False, "config changed since graduation (fingerprint mismatch)"
+        return None, "config changed since graduation (fingerprint mismatch)"
     age_days = (time.time() * 1000 - r.get("generated_ms", 0)) / DAY_MS
     if age_days > cfg.graduation.max_age_days:
-        return False, f"graduation report is {age_days:.0f} days old"
-    return True, "ok"
+        return None, f"graduation report is {age_days:.0f} days old"
+    return stage, "ok"

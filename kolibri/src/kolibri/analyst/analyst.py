@@ -327,8 +327,9 @@ class Analyst:
         if gross < g.cost_multiple * cost:
             return rej("4_cost", f"target {gross:.6g} < {g.cost_multiple}x cost {cost:.6g}")
         cost_r = cost / risk
+        prior = g.win_prob_by_setup.get(c.setup, g.win_prob_prior)
         p = min(Decimal("0.9"), max(Decimal("0.05"),
-                g.win_prob_prior + g.win_prob_per_score_pt * Decimal(repr(sc - g.score_threshold))))
+                prior + g.win_prob_per_score_pt * Decimal(repr(sc - g.score_threshold))))
         exp_r = p * reward - (1 - p) - cost_r
         if exp_r < g.min_net_r:
             return rej("4_net_r", f"E[R]={exp_r:.3f}")

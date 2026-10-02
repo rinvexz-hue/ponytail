@@ -26,12 +26,15 @@ the gate even at the entry tier; trades pinned under a 4h level cannot (`2_4h_ro
 "No trade" stays the most frequent output. Config ships with the entry tier (most conservative);
 set your real tier in `config/symbols.yaml` and confirm it with `kolibri check-live`.
 
+**Going live: follow [LIVE_TESTPLAN.md](LIVE_TESTPLAN.md)** (Dutch, step by step with go/stop
+criteria: data → backtest/optimise → paper ≥ 2 weeks → canary with real 25 EUR orders → live-small).
+
 ## Top-down validation (4 h → 15 m)
 
 | Layer | What it checks | Gate |
 |---|---|---|
 | 4 h direction | EMA9/21/50 stack and EMA50 slope must not oppose the trade; trend setups need price on the right side of the 4h EMA50 | `2_htf` |
-| 4 h room | the next 4h high (longs) / low (shorts) of the last 2 days must be ≥ 1.5R away | `2_4h_room` |
+| 4 h room | the nearest confirmed 4h swing high (longs) / low (shorts) must be ≥ 1.5R away; no pivot → the 2-day extreme | `2_4h_room` |
 | 4 h target | that 4h level (minus 0.1 ATR) is the final target; beyond the 4h range the runner trails | — |
 | 15 m regime | trend / range / squeeze / chaos on the 15m chart decides which setup may fire | `1_regime` |
 | 15 m trigger | pullback, mean-reversion, breakout or sweep on a closed 15m bar | setups A–D |
@@ -47,9 +50,11 @@ cd kolibri
 python3.12 -m venv .venv && . .venv/bin/activate
 pip install -e ".[dev]"
 pytest -q                              # 80+ tests: indicators vs `ta`, lookahead, chaos, parity, risk properties
-kolibri download --days 90             # Kraken trades -> 1m bars (hours: public rate limit; resumable). Needed before the first start
-kolibri backtest --days 90
-kolibri graduate --days 90 --paper-journal data/kolibri.sqlite
+kolibri preflight                      # where am I on the road to live, and what is the next step?
+kolibri download --days 120            # Kraken trades -> 1m bars (hours: public rate limit; resumable)
+kolibri backtest --days 120
+kolibri optimize --days 120 [--apply]  # holdout-checked robust search + win-rate calibration
+kolibri graduate --days 120            # stage: none / canary (orders capped at 25 EUR) / live
 kolibri check-live                     # read-only: keys, balances, tick/lot/min size, YOUR fee tier
 cp .env.example .env                   # set DASHBOARD_TOKEN (>=16 chars), Telegram vars
 kolibri run                            # paper; dashboard on http://127.0.0.1:8080

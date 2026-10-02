@@ -67,3 +67,14 @@ full suite green. Risk + execution coverage is enforced ≥ 85 % in CI.
 | 33 | Money | cost gate only looked at the 1R TP1 although half the position targets the 4h level | gate on the expected gross target (TP1 part + 4h-target part) | `test_default_fees_block_small_targets`, `test_net_r_gate` |
 | 34 | Tests | timing tests hard-coded 5 s / 10 min / 3 min | tests read entry timeout, time stop and cooldowns from config | `test_time_stop`, `test_entry_timeout_reprices_once_then_abandons`, `test_cooldowns` |
 | 35 | Backtest | synthetic generator trended up to ~40 %/day (unrealistic levels in demos) | drift / volatility scaled to ~3 %/day | demo screenshots |
+
+## Optimisation + road-to-live re-review
+
+| # | Area | Issue | Fix | Covered by |
+|---|---|---|---|---|
+| 36 | Risk | live mode started the risk officer at the paper equity (10k): a 500 EUR account would trip the −8 % drawdown kill at once | anchors reset to the real balance on the first run of a journal | `test_risk_anchors_reset_to_real_equity` |
+| 37 | Resilience | paper and live shared one journal: paper halts / trades would leak into live and into graduation | journal per mode (`data/kolibri-{mode}.sqlite`) | `test_live_start_reports_canary_stage` + graduation defaults |
+| 38 | Signals | 4h "levels" were plain 2-day extremes | confirmed swing pivots, causal (known only after 2 closed bars) | `test_4h_pivots_are_confirmed_only_after_two_closed_bars` |
+| 39 | Overfitting | an optimiser picking the best grid cell overfits | holdout never seen, fold-median − ½ spread, neighbour smoothing, margin vs current, holdout must not get worse | `test_robust_score_rejects_thin_folds`, synthetic run refuses to change |
+| 40 | Overfitting | calibrating win rates on a handful of trades | ≥ 30 trades per setup, shrinkage to 50 %, clamped 15–85 % | `test_calibration_needs_enough_trades_and_shrinks` |
+| 41 | Safety | 300 paper trades is unreachable at this horizon, so the old gate made live impossible rather than safe | staged graduation: canary (tiny real orders) then live; live still needs paper quality bars + clean canary | `test_stage_ladder`, `test_canary_caps_order_value` |

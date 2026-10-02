@@ -7,7 +7,7 @@ venue: kraken
 symbols: [BTCEUR, ETHEUR, SOLEUR, XRPEUR]   # Kraken spot, EUR quote
 leader: BTCEUR
 paper_equity: "10000"
-state_db: data/kolibri.sqlite
+state_db: data/kolibri-{mode}.sqlite   # paper and live journals are kept apart
 data_dir: data/history
 warmup_days: 12               # 4h EMA50 needs ~8.5 days of history; run `kolibri download` first
 
@@ -97,6 +97,7 @@ execution:
   reconcile_s: 30
   order_rate_per_min: 30        # Kraken's per-pair order counter is small (and cancels < 5 s cost extra); 50 % headroom
   flatten_on_shutdown: true
+  canary_notional: "25"         # EUR cap per order while only the canary stage is unlocked
   bar_grace_ms: 1500
 
 # Parameters the graduation pipeline perturbs +-20 % and walk-forward may search.
@@ -127,3 +128,6 @@ graduation:
   mc_runs: 1000
   mc_max_dd_pct: "12"
   min_paper_days: 14
+  canary_min_paper_trades: 10   # stage 1 "canary": live with tiny orders (execution.canary_notional)
+  paper_min_trades: 30          # stage 2 "live": normal sizing
+  canary_min_live_trades: 10

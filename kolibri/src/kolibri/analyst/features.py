@@ -81,8 +81,8 @@ class Features:
     adx_4h: float
     rsi_4h: float
     atr_4h: float
-    hi_4h: float  # highest high of the last 12 closed context bars (resistance / long target)
-    lo_4h: float  # lowest low of the last 12 closed context bars (support / short target)
+    hi_4h: float  # nearest 4h resistance above price (swing pivot, else 2-day high); == close if none
+    lo_4h: float  # nearest 4h support below price; == close if none
     vwap_crosses: int
     bars_since_squeeze: int
     mom5_atr: float  # 5-bar return in ATR units
@@ -146,6 +146,9 @@ class Context:
         self.adx, self.atr, self.rsi = ADX(14), ATR(14), RSI(14)
         self.highs: deque[float] = deque(maxlen=12)
         self.lows: deque[float] = deque(maxlen=12)
+        self._win: deque[tuple[float, float]] = deque(maxlen=5)  # (high, low) of the last 5 closed bars
+        self.pivot_highs: deque[float] = deque(maxlen=8)  # confirmed swing highs (~last 5-10 days)
+        self.pivot_lows: deque[float] = deque(maxlen=8)
         self.bias = self.stack = 0
 
     def update(self, bar: Bar) -> None:
@@ -158,10 +161,25 @@ class Context:
             self.rsi.update(c)
             self.highs.append(h)
             self.lows.append(lo)
+            self._win.append((h, lo))
+            if len(self._win) == 5:  # middle bar is a pivot once the 2 bars after it have CLOSED
+                hs, ls = [x[0] for x in self._win], [x[1] for x in self._win]
+                if hs[2] > max(hs[:2] + hs[3:]):
+                    self.pivot_highs.append(hs[2])
+                if ls[2] < min(ls[:2] + ls[3:]):
+                    self.pivot_lows.append(ls[2])
             if prev50 is not None and e50 is not None:
                 self.bias = _sign(e50 - prev50, c * 1e-5)
             if e9 is not None and e21 is not None and e50 is not None:
                 self.stack = 1 if e9 > e21 > e50 else -1 if e9 < e21 < e50 else 0
+
+    def levels(self, price: float) -> tuple[float, float]:
+        """Nearest 4h resistance above / support below `price`: confirmed swing pivots first, else the
+        2-day extreme. Returns `price` itself when nothing lies on that side (open air)."""
+        hi, lo = max(self.highs, default=price), min(self.lows, default=price)
+        above = [p for p in self.pivot_highs if p > price] or ([hi] if hi > price else [])
+        below = [p for p in self.pivot_lows if p < price] or ([lo] if lo < price else [])
+        return (min(above) if above else price), (max(below) if below else price)
 
     @property
     def ready(self) -> bool:
@@ -314,6 +332,7 @@ class FeatureEngine:
         assert ctx.ema50.value is not None and ctx.adx.value is not None
         assert ctx.rsi.value is not None and ctx.atr.value is not None
         book = self.book
+        res, sup = ctx.levels(c)
         f = Features(
             symbol=self.symbol, ts=bar.close_ts, warm=True, close=c, high=h, low=lo, open=o, atr=atr,
             ema9=e9, ema21=e21, ema50=e50, vwap=vwap, avwap=avwap,
@@ -326,7 +345,7 @@ class FeatureEngine:
             bb_mid=self.bb.mid, bw_pct=bw_pct, adx=adx, rv_pct=rv_pct, volz=volz, bar_delta=delta,
             prev_bar_delta=prev_delta, cvd_div=cvd_div, taker_ratio=taker_ratio, bias_15m=self.bias,
             bias_4h=ctx.bias, stack_4h=ctx.stack, ema50_4h=ctx.ema50.value, adx_4h=ctx.adx.value,
-            rsi_4h=ctx.rsi.value, atr_4h=ctx.atr.value, hi_4h=max(ctx.highs), lo_4h=min(ctx.lows),
+            rsi_4h=ctx.rsi.value, atr_4h=ctx.atr.value, hi_4h=res, lo_4h=sup,
             vwap_crosses=crosses, bars_since_squeeze=self.bars_since_squeeze,
             mom5_atr=mom5 / atr if atr > 0 else 0.0,
             swing_high=max(float(b.high) for b in swing), swing_low=min(float(b.low) for b in swing),

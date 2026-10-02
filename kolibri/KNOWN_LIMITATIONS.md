@@ -8,11 +8,15 @@ graduation pipeline exists precisely because they may not survive costs.
 - Kraken retail spot fees (0.60–1.20 % round trip below the top tiers) are large even for a
   15m/4h horizon: only trades with several percent of room to the next 4h level clear the cost
   gate. Expect few trades, especially at the entry fee tier.
-- The 4h levels are the high/low of the last 12 closed 4h bars (2 days): a simple, untuned
-  definition of support / resistance, not a full structure analysis.
-- Expected-R per candidate uses a **prior** win probability mapped from the score
-  (`win_prob_prior`, `win_prob_per_score_pt`). It is not calibrated. After paper trading, replace it
-  with per-setup hit rates from the journal.
+- 4h levels are confirmed swing pivots (2 lower bars each side, ~5–10 days of memory), else the
+  2-day extreme. A pivot is only known 8 hours after it formed. No volume profile / order blocks.
+- Expected-R uses a win probability per setup. Until `kolibri optimize` has ≥ 30 trades for a
+  setup it stays the hand-set prior (50 % + 1 %/score point); with data it is calibrated from
+  research trades and shrunk toward 50 %. Calibration on a short history is still noisy.
+- `kolibri optimize` searches only 3 parameters on a coarse grid, by design. It cannot find an edge
+  that is not there; its main job is to avoid fooling you.
+- Canary stage uses tiny real orders: it proves execution, not profitability. Few canary trades
+  say little about expectancy.
 - Synthetic spot TPs pay taker fee + slippage, not maker. Modelled honestly in backtest and paper.
 
 ## Backtest realism
