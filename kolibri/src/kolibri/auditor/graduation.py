@@ -145,7 +145,7 @@ def build_report(cfg: Config, bars: dict[str, list[Bar]], paper_journal: str | P
     pst = summarize(pt, curve_of(pt))
     canary = [_check("paper.days", days, ">=", g.min_paper_days),
               _check("paper.trades_for_canary", len(pt), ">=", g.canary_min_paper_trades),
-              _check("paper.expectancy_not_negative", pst["expectancy_r"], ">=", 0.0)]
+              _nonneg("paper.expectancy_not_negative", pt, pst)]
     checks += [c | {"stage": "canary"} for c in canary]
     checks += [c | {"stage": "live"} for c in _core_checks("paper", pst, cfg, g.paper_min_trades)]
 
@@ -154,8 +154,8 @@ def build_report(cfg: Config, bars: dict[str, list[Bar]], paper_journal: str | P
     auto_kills = _auto_kills(live_journal) if live_journal else 0
     checks += [c | {"stage": "live"} for c in (
         _check("canary.trades", len(lt), ">=", g.canary_min_live_trades),
-        _check("canary.expectancy_not_negative", lst["expectancy_r"], ">=", 0.0),
-        _check("canary.automatic_kills", auto_kills, "<=", 0),
+        _nonneg("canary.expectancy_not_negative", lt, lst),
+        _check("canary.automatic_kills", auto_kills, "<=", 0) | ({} if lt else {"pass": False}),
     )]
 
     stage = stage_of(checks)
@@ -175,6 +175,13 @@ def build_report(cfg: Config, bars: dict[str, list[Bar]], paper_journal: str | P
         "paper_trades": len(pt),
         "canary_trades": len(lt),
     }
+
+
+def _nonneg(name: str, trades: list[ClosedTrade], st: dict[str, Any]) -> dict[str, Any]:
+    """Expectancy >= 0, but never passes on zero trades (an empty journal proves nothing)."""
+    if not trades:
+        return {"name": name, "value": "geen trades", "op": ">=", "threshold": 0.0, "pass": False}
+    return _check(name, st["expectancy_r"], ">=", 0.0)
 
 
 def stage_of(checks: list[dict[str, Any]]) -> str:

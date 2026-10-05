@@ -78,3 +78,13 @@ full suite green. Risk + execution coverage is enforced ≥ 85 % in CI.
 | 39 | Overfitting | an optimiser picking the best grid cell overfits | holdout never seen, fold-median − ½ spread, neighbour smoothing, margin vs current, holdout must not get worse | `test_robust_score_rejects_thin_folds`, synthetic run refuses to change |
 | 40 | Overfitting | calibrating win rates on a handful of trades | ≥ 30 trades per setup, shrinkage to 50 %, clamped 15–85 % | `test_calibration_needs_enough_trades_and_shrinks` |
 | 41 | Safety | 300 paper trades is unreachable at this horizon, so the old gate made live impossible rather than safe | staged graduation: canary (tiny real orders) then live; live still needs paper quality bars + clean canary | `test_stage_ladder`, `test_canary_caps_order_value` |
+
+## Integration + polish re-review
+
+| # | Area | Issue | Fix | Covered by |
+|---|---|---|---|---|
+| 42 | Gates | "expectancy ≥ 0" graduation checks passed with zero trades (empty journal looked green) | no trades → check fails with "geen trades" | `test_live_start_reports_canary_stage`, e2e `graduate` run |
+| 43 | Integration | drift detection (live vs backtest) existed but was never called | runs with the daily report; WARN alerts in Dutch | `test_drift_flags_live_worse_than_backtest` |
+| 44 | Consistency | docs / CLI disagreed on history length (90 vs 120 days) and named the old single journal | 120 days everywhere; journal per mode in RUNBOOK | grep check |
+| 45 | UX | Telegram daily report was the only English message | Dutch, same tone as the dashboard | — |
+| 46 | UX | phone: tables scrolled sideways and long labels overflowed (page 499 px wide at 390) | rows become cards, "why no trade" first, labels wrap; KPI grid 4/2 columns; 4h support/resistance as a range bar; glossary collapsible | headless Chromium at 390 px: no horizontal scroll on both tabs |

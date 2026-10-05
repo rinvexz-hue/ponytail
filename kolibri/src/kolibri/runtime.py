@@ -8,17 +8,19 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import os
 import signal
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 
 from kolibri.adapters.base import ExchangeAdapter
 from kolibri.adapters.sim import SimBroker
 from kolibri.alerts.telegram import Alert, AlertManager
 from kolibri.analyst.analyst import Health
-from kolibri.auditor.auditor import daily_report, day_stats, rejection_histogram
+from kolibri.auditor.auditor import daily_report, day_stats, drift, rejection_histogram
 from kolibri.auditor.graduation import check_graduation
 from kolibri.backtest.data import append_bars
 from kolibri.backtest.metrics import max_drawdown_pct
@@ -153,6 +155,15 @@ class Runtime:
         async with self.lock:
             await self.desk.kill(reason, now_ms())
 
+    def _baseline(self) -> dict[str, Any]:
+        """Backtest (OOS) stats from the graduation report, for drift checks."""
+        p = Path(self.cfg.graduation.report_path)
+        try:
+            stats: dict[str, Any] = json.loads(p.read_text()).get("oos_stats", {}) if p.exists() else {}
+        except ValueError:
+            stats = {}
+        return stats
+
     async def rearm(self) -> None:
         async with self.lock:
             self.desk.risk.rearm(now_ms())
@@ -187,6 +198,8 @@ class Runtime:
                 self.alerts.push(Alert("INFO", text, now / 1000))
             if now // DAY_MS != day:
                 self.alerts.push(Alert("INFO", daily_report(self.j, day * DAY_MS), now / 1000))
+                for flag in drift(self.j, self._baseline()):  # live worse than tested: tell the human
+                    self.alerts.push(Alert("WARN", f"⚠️ Afwijking t.o.v. backtest: {flag}", now / 1000))
                 day = now // DAY_MS
             await self.alerts.flush()
 

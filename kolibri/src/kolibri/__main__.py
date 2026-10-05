@@ -1,7 +1,7 @@
 """KOLIBRI command line.
 
   kolibri run                      # paper by default; live needs MODE=live + LIVE_CONFIRM + graduation
-  kolibri download --days 90       # Kraken public trades -> 1m bars in data/history (slow, resumable)
+  kolibri download --days 120      # Kraken public trades -> 1m bars in data/history (slow, resumable)
   kolibri check-live               # read-only: Kraken keys, balances, filters and YOUR fee tier vs config
   kolibri backtest [--days N | --synthetic N]
   kolibri optimize --days 120 [--apply]   # robust parameter search + win-rate calibration (holdout-checked)
@@ -43,7 +43,7 @@ def main(argv: list[str] | None = None) -> None:
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("run")
     d = sub.add_parser("download")
-    d.add_argument("--days", type=int, default=180)
+    d.add_argument("--days", type=int, default=120)
     for name in ("backtest", "graduate", "optimize"):
         b = sub.add_parser(name)
         b.add_argument("--days", type=int)

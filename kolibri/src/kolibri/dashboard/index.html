@@ -49,7 +49,9 @@ section { background: linear-gradient(180deg, var(--forest-900), #0a1d15); borde
 h2 { margin: 0; font-size: 15px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
 h2::before { content: ""; width: 4px; height: 16px; border-radius: 2px; background: var(--orange); }
 .lead { margin: 2px 0 14px; color: var(--moss); font-size: 12.5px; }
-.kpis { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 170px), 1fr)); }
+.kpis { display: grid; gap: 12px; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+@media (max-width: 900px) { .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 380px) { .kpis { grid-template-columns: 1fr; } }
 .kpi { padding: 12px 14px; border-radius: 12px; background: var(--forest-950); border: 1px solid var(--forest-700); }
 .kpi .label { color: var(--mist); font-size: 12.5px; font-weight: 600; }
 .kpi .value { font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; margin: 2px 0; }
@@ -81,6 +83,47 @@ td small, .sub { display: block; color: var(--moss); font-size: 11.5px; }
 dl.glossary { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 10px 24px; margin: 0; }
 dl.glossary div { padding: 10px 12px; border-left: 3px solid var(--orange); background: var(--forest-950); border-radius: 0 10px 10px 0; }
 dl.glossary dt { font-weight: 700; } dl.glossary dd { margin: 2px 0 0; color: var(--mist); font-size: 12.5px; }
+/* phone header: token full width, actions as a tidy 2x2 grid */
+@media (max-width: 640px) {
+  header { padding: 10px 14px; gap: 8px; }
+  .actions { margin-left: 0; width: 100%; display: grid; grid-template-columns: 1fr 1fr; }
+  .actions label { display: none; }
+  .actions input { grid-column: 1 / -1; width: 100%; }
+  .kpi .value { font-size: 20px; }
+  main { padding: 14px 12px 32px; }
+}
+/* phone: table rows become cards (no sideways scrolling) */
+@media (max-width: 640px) {
+  table.cards thead { display: none; }
+  table.cards, table.cards tbody { display: block; }
+  table.cards tr { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; padding: 14px 0;
+    border-bottom: 1px solid var(--forest-700); }
+  table.cards td { display: block; border: none; padding: 0; white-space: normal; min-width: 0; }
+  table.cards td.head { grid-column: 1 / -1; font-size: 16px; }
+  table.cards td.head small { display: inline; margin-left: 8px; }
+  table.cards td.full { grid-column: 1 / -1; }
+  table.cards td[data-label]::before { content: attr(data-label); display: block; margin-bottom: 4px; font-size: 10.5px;
+    letter-spacing: .06em; text-transform: uppercase; color: var(--moss); }
+  table.cards td[colspan] { grid-column: 1 / -1; }
+  table.cards .chip { white-space: normal; max-width: 100%; }
+  table.cards td.why { grid-column: 1 / -1; order: -1; }  /* the most important line first */
+  table.cards td.head { order: -2; }
+  .scroll { overflow: visible; }
+}
+/* 4h range: where price sits between the nearest 4h support and resistance */
+.range { position: relative; height: 8px; min-width: 120px; margin: 8px 0 4px; border-radius: 4px;
+  background: linear-gradient(90deg, rgba(95,211,154,.35), rgba(255,140,50,.35)); }
+.range i { position: absolute; top: -4px; width: 4px; height: 16px; margin-left: -2px; border-radius: 2px; background: var(--white);
+  box-shadow: 0 0 0 2px var(--forest-900); }
+.range-lbl { display: flex; justify-content: space-between; gap: 8px; font-size: 11.5px; color: var(--moss); white-space: nowrap; }
+.range-lbl b { color: var(--mist); font-weight: 600; }
+#alerts { columns: 2 340px; column-gap: 28px; } #alerts .alert { break-inside: avoid; }
+details.glossary-box > summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 15px; }
+details.glossary-box > summary::before { content: "▸"; color: var(--orange); transition: transform .15s; }
+details.glossary-box[open] > summary::before { transform: rotate(90deg); }
+details.glossary-box > summary::-webkit-details-marker { display: none; }
+details.glossary-box[open] > summary { margin-bottom: 12px; }
+@media (prefers-reduced-motion: reduce) { details.glossary-box > summary::before { transition: none; } }
 /* tabs + progress view */
 main[hidden] { display: none; }
 button:disabled { opacity: .45; cursor: not-allowed; }
@@ -122,6 +165,10 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .bar2 { height: 10px; border-radius: 0 5px 5px 0; background: var(--forest-950); overflow: hidden; }
 .bar2 i { display: block; height: 100%; border-radius: 0 5px 5px 0; background: var(--orange); }
 .bar2 i.full { background: var(--mint); }
+@media (max-width: 640px) {
+  .meter { grid-template-columns: 1fr auto; gap: 6px 12px; }
+  .meter .bar2 { grid-column: 1 / -1; grid-row: 2; }
+}
 h4.group { margin: 14px 0 2px; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--mist); }
 </style>
 </head>
@@ -154,15 +201,15 @@ h4.group { margin: 14px 0 2px; font-size: 12px; text-transform: uppercase; lette
   <section class="wide">
     <h2>Markten nu</h2>
     <p class="lead">Top-down per munt: eerst de 4-uurs grafiek (richting en ruimte tot de volgende top/bodem), dan de 15-minuten grafiek (marktfase en instapsignaal). "Geen signaal" is normaal: er wordt alleen gehandeld als beide tijdframes het eens zijn en alle controles slagen.</p>
-    <div class="scroll"><table>
-      <thead><tr><th>Munt</th><th>4 uur · richting</th><th>4 uur · ruimte</th><th>15 min · marktfase</th><th>Waarom (nog) geen trade</th><th>Datafeed</th><th>Laatste data</th></tr></thead>
+    <div class="scroll"><table class="cards">
+      <thead><tr><th>Munt</th><th>4 uur · richting</th><th>4 uur · steun ↔ weerstand</th><th>15 min · marktfase</th><th>Waarom (nog) geen trade</th><th>Datafeed</th><th title="Hoe lang geleden de laatste koers binnenkwam">Laatste data</th></tr></thead>
       <tbody id="syms"></tbody></table></div>
   </section>
 
   <section class="wide">
     <h2>Open posities</h2>
     <p class="lead">Lopende trades. Elke positie heeft altijd een stop-loss bij de beurs. R = winst of verlies uitgedrukt in het geriskeerde bedrag (+1R = even veel gewonnen als je riskeerde).</p>
-    <div class="scroll"><table>
+    <div class="scroll"><table class="cards">
       <thead><tr><th>Munt</th><th>Richting</th><th>Strategie</th><th>Aantal</th><th>Instapprijs</th><th>Stop-loss</th><th>Huidige prijs</th><th>Resultaat</th><th>Deelwinst</th><th>Looptijd</th></tr></thead>
       <tbody id="pos"></tbody></table></div>
   </section>
@@ -191,14 +238,14 @@ h4.group { margin: 14px 0 2px; font-size: 12px; text-transform: uppercase; lette
     <div id="health"></div>
   </section>
 
-  <section>
+  <section class="wide">
     <h2>Meldingen</h2>
     <p class="lead">Laatste berichten (ook naar Telegram). Kritiek blijft herhalen tot je op "Meldingen gezien" klikt.</p>
     <div id="alerts"></div>
   </section>
 
   <section class="wide">
-    <h2>Begrippen</h2>
+    <details class="glossary-box"><summary>Uitleg van de begrippen</summary>
     <dl class="glossary">
       <div><dt>R (risico-eenheid)</dt><dd>Het bedrag dat je verliest als de stop-loss geraakt wordt. Per trade maximaal <span class="lim-risk">0,25</span>% van het vermogen.</dd></div>
       <div><dt>Top-down (4 uur → 15 min)</dt><dd>De 4-uurs grafiek bepaalt de richting en het koersdoel (de volgende 4-uurs top of bodem). De 15-minuten grafiek bepaalt alleen het instapmoment. Een 4-uurs candle telt pas mee als hij gesloten is.</dd></div>
@@ -207,7 +254,7 @@ h4.group { margin: 14px 0 2px; font-size: 12px; text-transform: uppercase; lette
       <div><dt>Deelwinst</dt><dd>Bij +1R wordt de helft verkocht en schuift de stop naar instapprijs + kosten: die trade kan dan niet meer verliezen.</dd></div>
       <div><dt>Paper</dt><dd>Oefenmodus met gesimuleerd geld en echte koersen. Live kan pas na het slagen van het graduatierapport.</dd></div>
       <div><dt>Noodstop</dt><dd>Sluit alle posities en stopt met handelen tot iemand bewust op "Hervatten" klikt.</dd></div>
-    </dl>
+    </dl></details>
   </section>
 </main>
 <main id="prog" role="tabpanel" aria-labelledby="t-prog" hidden>
@@ -386,23 +433,31 @@ function render(s) {
   $("syms").innerHTML = syms.map(k => {
     const h = s.health[k] || {}, [rn, rc] = REGIME[s.regimes[k]] || ["—", "neutral"], [gn, gh, gc] = gate(s.gates[k]);
     const c = (s.context || {})[k], [tn, tc, th] = trend4h(c);
-    const room = c ? `↑ ${signed((c.hi_4h / c.close - 1) * 100)}%<small>tot 4u-top ${nl(c.hi_4h, c.hi_4h < 10 ? 4 : 1)}</small>`
-      + `↓ ${signed((c.lo_4h / c.close - 1) * 100)}%<small>tot 4u-bodem ${nl(c.lo_4h, c.lo_4h < 10 ? 4 : 1)}</small>` : "—";
-    return `<tr><td><b>${esc(k.replace(QUOTE, ""))}</b><small>${esc(k)}</small></td>
-      <td><span class="chip ${tc}">${tn}</span><small>${esc(th)}</small></td><td>${room}</td>
-      <td><span class="chip ${rc}">${rn}</span><small>${esc(REGIME_HELP[s.regimes[k]] || "")}</small></td>
-      <td><span class="chip ${gc}">${esc(gn)}</span><small>${esc(gh)}</small></td>
-      <td><span class="chip ${h.connected ? "good" : "crit"}">${h.connected ? "Verbonden" : "Verbroken"}</span></td>
-      <td>${h.tick_age_s == null ? "—" : nl(h.tick_age_s, 1) + " s geleden"}</td></tr>`;
+    let room = "—";
+    if (c) {
+      const up = c.hi_4h > c.close, dn = c.lo_4h < c.close, span = c.hi_4h - c.lo_4h;
+      const pos = up && dn && span > 0 ? (c.close - c.lo_4h) / span * 100 : up ? 0 : 100;
+      const d = c.close < 10 ? 4 : 1;
+      room = `<div class="range" title="Prijs tussen 4u-steun ${nl(c.lo_4h, d)} en 4u-weerstand ${nl(c.hi_4h, d)}"><i style="left:${pos.toFixed(1)}%"></i></div>
+        <div class="range-lbl"><span>${dn ? `<b>${signed((c.lo_4h / c.close - 1) * 100, 1)}%</b> steun` : "geen steun"}</span>
+        <span>${up ? `weerstand <b>${signed((c.hi_4h / c.close - 1) * 100, 1)}%</b>` : "vrije ruimte ↑"}</span></div>`;
+    }
+    return `<tr><td class="head"><b>${esc(k.replace(QUOTE, ""))}</b><small>${esc(k)}</small></td>
+      <td data-label="4 uur · richting"><span class="chip ${tc}">${tn}</span><small>${esc(th)}</small></td>
+      <td data-label="4 uur · steun ↔ weerstand" class="full">${room}</td>
+      <td data-label="15 min · marktfase"><span class="chip ${rc}">${rn}</span><small>${esc(REGIME_HELP[s.regimes[k]] || "")}</small></td>
+      <td data-label="Waarom (nog) geen trade" class="why"><span class="chip ${gc}">${esc(gn)}</span><small>${esc(gh)}</small></td>
+      <td data-label="Datafeed"><span class="chip ${h.connected ? "good" : "crit"}">${h.connected ? "Verbonden" : "Verbroken"}</span></td>
+      <td data-label="Laatste data">${h.tick_age_s == null ? "—" : nl(h.tick_age_s, 1) + " s"}</td></tr>`;
   }).join("") || `<tr><td colspan="7" class="muted">Wachten op marktdata…</td></tr>`;
 
   $("pos").innerHTML = (s.positions || []).length ? s.positions.map(p => `<tr>
-      <td><b>${esc(p.symbol.replace(QUOTE, ""))}</b></td>
-      <td>${p.direction === "long" ? "Long<small>koop, winst bij stijging</small>" : "Short<small>winst bij daling</small>"}</td>
-      <td>${esc(SETUP[p.setup] || p.setup)}</td><td>${esc(p.qty)}</td><td>${esc(p.entry)}</td>
-      <td>${esc(p.stop)}<small>staat bij de beurs</small></td><td>${esc(p.mark)}</td>
-      <td class="${cls(p.r)}"><b>${signed(p.r)} R</b></td>
-      <td>${p.tp1_done ? "Ja<small>stop op instap + kosten</small>" : "Nog niet<small>bij +1R, rest naar 4u-doel</small>"}</td><td>${age(p.age_s)}</td></tr>`).join("")
+      <td class="head"><b>${esc(p.symbol.replace(QUOTE, ""))}</b></td>
+      <td data-label="Richting">${p.direction === "long" ? "Long<small>koop, winst bij stijging</small>" : "Short<small>winst bij daling</small>"}</td>
+      <td data-label="Strategie">${esc(SETUP[p.setup] || p.setup)}</td><td data-label="Aantal">${esc(p.qty)}</td><td data-label="Instapprijs">${esc(p.entry)}</td>
+      <td data-label="Stop-loss">${esc(p.stop)}<small>staat bij de beurs</small></td><td data-label="Huidige prijs">${esc(p.mark)}</td>
+      <td data-label="Resultaat" class="${cls(p.r)}"><b>${signed(p.r)} R</b></td>
+      <td data-label="Deelwinst">${p.tp1_done ? "Ja<small>stop op instap + kosten</small>" : "Nog niet<small>bij +1R, rest naar 4u-doel</small>"}</td><td data-label="Looptijd">${age(p.age_s)}</td></tr>`).join("")
     : `<tr><td colspan="10" class="muted">Geen open posities. Niet handelen is ook een geldige keuze.</td></tr>`;
 
   chart(s.curve);

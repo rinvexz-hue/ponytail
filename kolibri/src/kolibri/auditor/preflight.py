@@ -60,7 +60,7 @@ def checklist(cfg: Config) -> list[tuple[str, list[Item]]]:
     worst = min(hist.values())
     sections.append(("1. Historische data", [
         Item(worst >= cfg.warmup_days, f"minste historie: {worst:.0f} dagen (minimaal {cfg.warmup_days} om te starten)",
-             "kolibri download --days 90"),
+             "kolibri download --days 120"),
         Item(worst >= 90 or None, f"voor betrouwbare backtests/graduatie: >= 90 dagen (nu {worst:.0f})",
              "kolibri download --days 120"),
     ]))

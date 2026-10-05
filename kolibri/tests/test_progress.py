@@ -55,3 +55,14 @@ def test_build_progress_and_standalone_dashboard(cfg: Config, tmp_path: Path,
     assert client.get("/api/progress", headers=ok).json()["direction"]["level"] == "good"
     assert client.get("/api/state", headers=ok).status_code == 409  # no desk running
     assert client.post("/api/kill", headers=ok).status_code == 409
+
+
+def test_drift_flags_live_worse_than_backtest() -> None:
+    from kolibri.auditor.auditor import drift
+
+    j = Journal()
+    for i in range(40):
+        j.emit("trade", T0 + i, "BTCEUR", trade={"r": "-0.2" if i % 2 else "0.1"})
+    flags = drift(j, {"expectancy_r": 0.3, "win_rate": 0.7})
+    assert len(flags) == 2 and "backtest" in flags[0]
+    assert drift(j, {"expectancy_r": -0.5, "win_rate": 0.4}) == []

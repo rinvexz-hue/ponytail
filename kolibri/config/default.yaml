@@ -22,7 +22,7 @@ risk:
   max_positions: 4
   heat_cap_pct: "1.0"           # = 4 x 0.25 ; validated below
   max_same_direction: 2
-  corr_threshold: 0.8           # 60-bar 1m-return correlation to the leader
+  corr_threshold: 0.8           # 60-bar (15m) return correlation to the leader
   corr_heat_multiplier: "1.5"
   max_net_exposure: "1.0"       # |sum signed notional| / equity
   daily_loss_pct: "2"           # -> flatten, halt until next UTC day

@@ -34,11 +34,11 @@ def day_stats(j: Journal, since_ts: int) -> dict[str, Any]:
 def daily_report(j: Journal, day_start_ts: int) -> str:
     s = day_stats(j, day_start_ts)
     rej = rejection_histogram(j, day_start_ts)
-    top = ", ".join(f"{k}:{v}" for k, v in list(rej.items())[:5]) or "none"
-    kills = "; ".join(str(k) for k in s["kills"]) or "none"
-    return (f"KOLIBRI daily report\ntrades {s['trades']} (wins {s['wins']}), sum R {s['sum_r']:+.2f}, "
-            f"avg R {s['avg_r']:+.2f}, PnL {s['pnl']:+.2f}\nintents {s['intents']}, top rejections: {top}\n"
-            f"kills: {kills}")
+    top = ", ".join(f"{k}: {v}×" for k, v in list(rej.items())[:5]) or "geen"
+    kills = "; ".join(str(k) for k in s["kills"]) or "geen"
+    return (f"📊 KOLIBRI dagrapport\nTrades: {s['trades']} (winst: {s['wins']}) · som {s['sum_r']:+.2f} R · "
+            f"gemiddeld {s['avg_r']:+.2f} R · resultaat {s['pnl']:+.2f}\nGoedgekeurde signalen: {s['intents']} · "
+            f"meest afgewezen op: {top}\nNoodstops: {kills}")
 
 
 def drift(j: Journal, baseline: dict[str, Any], since_ts: int = 0, min_trades: int = 30) -> list[str]:
@@ -51,7 +51,7 @@ def drift(j: Journal, baseline: dict[str, Any], since_ts: int = 0, min_trades: i
     live_wr = sum(1 for r in rs if r > 0) / len(rs)
     flags = []
     if live_exp < baseline.get("expectancy_r", 0.0) - 0.15:
-        flags.append(f"expectancy drift: live {live_exp:.3f}R vs backtest {baseline['expectancy_r']:.3f}R")
+        flags.append(f"gemiddelde per trade live {live_exp:+.2f} R vs backtest {baseline['expectancy_r']:+.2f} R")
     if live_wr < baseline.get("win_rate", 0.0) - 0.10:
-        flags.append(f"win-rate drift: live {live_wr:.1%} vs backtest {baseline['win_rate']:.1%}")
+        flags.append(f"winstpercentage live {live_wr:.0%} vs backtest {baseline['win_rate']:.0%}")
     return flags

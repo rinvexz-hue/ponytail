@@ -1,6 +1,6 @@
 # KOLIBRI runbook
 
-All times UTC. State (halts, equity anchors, journal) lives in `data/kolibri.sqlite` and survives restarts.
+All times UTC. State (halts, equity anchors, journal) lives in `data/kolibri-paper.sqlite` / `data/kolibri-live.sqlite` (one journal per mode) and survives restarts.
 
 ## Start / stop
 
@@ -26,7 +26,7 @@ The dashboard port is bound to 127.0.0.1 on the host. Never publish it; reach it
 
 ## Recover after a halt
 
-1. Read why: dashboard header / Telegram / `sqlite3 data/kolibri.sqlite "select * from events where kind='kill' order by id desc limit 5"`.
+1. Read why: dashboard header / Telegram / `sqlite3 data/kolibri-live.sqlite "select * from events where kind='kill' order by id desc limit 5"`.
 2. Check the venue UI: no open orders, no unexpected balances in the trading sub-account.
 3. Fix the cause (network, keys, clock: `chronyc tracking`, venue incident).
 4. Re-arm: dashboard **Re-arm**, or offline `kolibri rearm` (also re-anchors drawdown/week at current equity).
@@ -43,11 +43,11 @@ intentional (fail closed); do not "fix" it by skipping reconciliation.
 The operator's version, in Dutch with commands and go/stop criteria per phase, is
 [LIVE_TESTPLAN.md](LIVE_TESTPLAN.md); `kolibri preflight` shows the current position. Summary:
 
-1. `kolibri download --days 90` (hours: Kraken's public trade endpoint is rate limited; it resumes
+1. `kolibri download --days 120` (hours: Kraken's public trade endpoint is rate limited; it resumes
    where it stopped) → `kolibri backtest` → `kolibri graduate` (walk-forward OOS, ±20 %
    perturbation, Monte Carlo). Fix nothing by curve-fitting; ≤ 12 tunables.
 2. Paper ≥ 2 weeks: `kolibri run` with `MODE=paper`. Then
-   `kolibri graduate --paper-journal data/kolibri.sqlite`.
+   `kolibri graduate --days 120` (reads the paper and live journals automatically).
 3. Kraken has no spot testnet. Instead: `kolibri check-live` with the live keys (read-only: prints
    balances, verifies tick / lot / minimum order size and the fee tier Kraken really charges you;
    refuses on any mismatch). Then **canary**: a report with stage `canary` lets live run with every

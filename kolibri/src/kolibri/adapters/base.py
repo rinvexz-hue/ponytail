@@ -1,4 +1,4 @@
-"""Exchange adapter contract shared by the SimBroker (backtest + paper) and the live Binance adapter.
+"""Exchange adapter contract shared by the SimBroker (backtest + paper) and the live Kraken adapter.
 
 Adapters report order state asynchronously through the listener; the Executioner never assumes a
 call's effect until the matching OrderUpdate arrives."""
