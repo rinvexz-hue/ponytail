@@ -104,6 +104,9 @@ class _FakeRt:
                 return 2
 
         self.alerts = Alerts()
+        from kolibri.core.config import load_config
+
+        self.cfg = load_config()
 
     async def kill(self, reason: str) -> None:
         self.killed.append(reason)

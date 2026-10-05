@@ -7,6 +7,7 @@
   kolibri optimize --days 120 [--apply]   # robust parameter search + win-rate calibration (holdout-checked)
   kolibri graduate --days 120      # OOS + paper (+ canary) evidence -> stage: none / canary / live
   kolibri preflight                # checklist: where am I on the way to live, what is the next step
+  kolibri dashboard                # progress dashboard only (no trading): http://127.0.0.1:8080
   kolibri rearm                    # clear a manual halt (after you know why it tripped)
 """
 
@@ -54,6 +55,7 @@ def main(argv: list[str] | None = None) -> None:
         if name == "optimize":
             b.add_argument("--apply", action="store_true", help="write accepted values to config/local.yaml")
     sub.add_parser("preflight")
+    sub.add_parser("dashboard")
     sub.add_parser("rearm")
     sub.add_parser("check-live")
     a = p.parse_args(argv)
@@ -116,6 +118,16 @@ def main(argv: list[str] | None = None) -> None:
         from kolibri.auditor.preflight import checklist, render
 
         print(render(checklist(cfg)))
+    elif a.cmd == "dashboard":
+        import os
+
+        import uvicorn
+
+        from kolibri.dashboard.app import create_app
+
+        host = os.environ.get("DASHBOARD_HOST", cfg.dashboard.host)
+        print(f"progress dashboard on http://{cfg.dashboard.host}:{cfg.dashboard.port}  (desk is not trading)")
+        uvicorn.run(create_app(None, cfg), host=host, port=cfg.dashboard.port, log_level="warning")
     elif a.cmd == "rearm":
         from kolibri.core.journal import Journal
 

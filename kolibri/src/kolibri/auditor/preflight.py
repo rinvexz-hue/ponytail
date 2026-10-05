@@ -25,8 +25,17 @@ class Item:
 
 
 def _days_of_history(cfg: Config, sym: str) -> float:
-    bars = load_bars(cfg.data_dir, sym)
-    return (bars[-1].close_ts - bars[0].open_ts) / DAY_MS if bars else 0.0
+    """First and last stored minute only (cheap enough to poll from the dashboard)."""
+    files = sorted(Path(cfg.data_dir).glob(f"{sym}-1m-*.csv"))
+    if not files:
+        return 0.0
+    first = files[0].open().readline().split(",")[0]
+    last = files[-1].read_bytes().rstrip().rsplit(b"\n", 1)[-1].split(b",")[0]
+    try:
+        return (int(last) - int(first) + MINUTE_MS) / DAY_MS
+    except ValueError:
+        bars = load_bars(cfg.data_dir, sym)
+        return (bars[-1].close_ts - bars[0].open_ts) / DAY_MS if bars else 0.0
 
 
 def _journal_trades(path: str) -> tuple[int, float]:

@@ -11,11 +11,21 @@ from typing import Any
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import HTMLResponse
 
+from kolibri.auditor.progress import build_progress
+from kolibri.core.config import Config
+
 INDEX = (Path(__file__).parent / "index.html").read_text()
 
 
-def create_app(rt: Any) -> FastAPI:
+def create_app(rt: Any, cfg: Config | None = None) -> FastAPI:
+    """`rt` is the running desk; None serves only the progress view (`kolibri dashboard`)."""
     app = FastAPI(title="KOLIBRI", docs_url=None, redoc_url=None, openapi_url=None)
+    config = cfg if cfg is not None else rt.cfg
+
+    def desk() -> Any:
+        if rt is None:
+            raise HTTPException(409, "desk not running (progress-only dashboard)")
+        return rt
 
     def auth(authorization: str = Header(default="")) -> None:
         token = os.environ.get("DASHBOARD_TOKEN", "")
@@ -31,26 +41,30 @@ def create_app(rt: Any) -> FastAPI:
     # every handler is async: it runs on the event-loop thread that owns the SQLite journal
     @app.get("/api/state", dependencies=[Depends(auth)])
     async def state() -> dict[str, Any]:
-        snap: dict[str, Any] = rt.snapshot()
+        snap: dict[str, Any] = desk().snapshot()
         return snap
+
+    @app.get("/api/progress", dependencies=[Depends(auth)])
+    async def progress() -> dict[str, Any]:
+        return build_progress(config) | {"desk_running": rt is not None}
 
     @app.post("/api/kill", dependencies=[Depends(auth)])
     async def kill() -> dict[str, str]:
-        await rt.kill("manual KILL from dashboard")
+        await desk().kill("manual KILL from dashboard")
         return {"ok": "flattened + halted (manual re-arm required)"}
 
     @app.post("/api/flatten", dependencies=[Depends(auth)])
     async def flatten() -> dict[str, str]:
-        await rt.flatten("manual flatten")
+        await desk().flatten("manual flatten")
         return {"ok": "flatten sent"}
 
     @app.post("/api/rearm", dependencies=[Depends(auth)])
     async def rearm() -> dict[str, str]:
-        await rt.rearm()
+        await desk().rearm()
         return {"ok": "re-armed"}
 
     @app.post("/api/ack", dependencies=[Depends(auth)])
     async def ack() -> dict[str, int]:
-        return {"acked": rt.alerts.ack()}
+        return {"acked": desk().alerts.ack()}
 
     return app

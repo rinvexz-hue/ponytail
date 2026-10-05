@@ -1,5 +1,10 @@
 # KOLIBRI — stappenplan naar live
 
+**Voortgang bekijken:** dashboard → tab **Voortgang naar live**. Dat werkt ook als de desk nog niet
+draait: `kolibri dashboard` (zelfde adres en toegangscode). Je ziet bovenaan het oordeel (op koers /
+let op / niet op koers), daaronder het stappenplan, de opgetelde R per trade, het gemiddelde van de
+laatste 20 trades tegenover de backtest, en per graduatie-check hoe ver je van de lat zit.
+
 Elke fase heeft een **ga/stop-criterium**. Haal je dat niet, dan ga je niet door: dan is "niet
 live gaan" de juiste uitkomst. `kolibri preflight` laat op elk moment zien waar je staat en wat de
 volgende stap is. Reken op **6–10 weken** van nu tot live met normale ordergrootte.
