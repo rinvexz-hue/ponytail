@@ -56,7 +56,8 @@ The operator's version, in Dutch with commands and go/stop criteria per phase, i
 4. Live-small: a **dedicated Kraken sub-account** holding only EUR, ≤ 10 % of intended capital.
    API key permissions: *Query funds*, *Query open/closed orders & trades*, *Create & modify
    orders*, *Cancel/close orders*, *WebSocket interface*. **Never** *Withdraw funds*. Set the key's
-   IP allowlist to the VPS. Then `MODE=live`, `LIVE_CONFIRM=I_ACCEPT_THE_RISK`.
+   IP allowlist to the VPS. `check-live` and every live start probe the key and refuse it unless
+   Kraken answers *Permission denied* to a withdraw query. Then `MODE=live`, `LIVE_CONFIRM=I_ACCEPT_THE_RISK`.
 5. Scale only after live-small matches the graduation baseline (Auditor drift flags stay quiet).
 
 Changing any trading parameter changes the config fingerprint and invalidates the graduation

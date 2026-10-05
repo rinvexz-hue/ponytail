@@ -24,6 +24,7 @@ Commando's staan als `kolibri …`. Met Docker: `docker compose run --rm kolibri
    git clone https://github.com/rinvexz-hue/ponytail.git && cd ponytail/kolibri
    git checkout claude/kolibri-scalping-desk
    cp .env.example .env
+   mkdir -p data && sudo chown -R 10001:10001 data config   # de container draait als gebruiker 10001
    ```
 3. Zet in `.env`: `DASHBOARD_TOKEN` (32 willekeurige tekens: `openssl rand -hex 16`).
 4. Telegram: maak een bot via @BotFather → zet `TELEGRAM_BOT_TOKEN`; stuur je bot een bericht en
@@ -97,8 +98,9 @@ kolibri graduate --days 120      # leest automatisch het paper-journaal
    ```bash
    kolibri check-live
    ```
-   Dit toont je saldo en controleert prijsstap, lotgrootte, minimale ordergrootte en het fee-niveau
-   dat Kraken jou echt rekent.
+   Dit toont je saldo en controleert prijsstap, lotgrootte, minimale ordergrootte, het fee-niveau
+   dat Kraken jou echt rekent, en dat de sleutel **geen geld kan opnemen**. Kan hij dat wel (of is
+   het niet te bewijzen), dan weigert check-live én weigert live te starten: maak een nieuwe sleutel.
 
 **Ga verder als:** check-live `OK` zegt. Wijkt het fee-niveau af, zet het goed in `config/local.yaml`,
 draai `kolibri graduate` opnieuw (de config is veranderd) en dan check-live nog eens.

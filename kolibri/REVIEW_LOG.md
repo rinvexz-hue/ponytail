@@ -88,3 +88,10 @@ full suite green. Risk + execution coverage is enforced ≥ 85 % in CI.
 | 44 | Consistency | docs / CLI disagreed on history length (90 vs 120 days) and named the old single journal | 120 days everywhere; journal per mode in RUNBOOK | grep check |
 | 45 | UX | Telegram daily report was the only English message | Dutch, same tone as the dashboard | — |
 | 46 | UX | phone: tables scrolled sideways and long labels overflowed (page 499 px wide at 390) | rows become cards, "why no trade" first, labels wrap; KPI grid 4/2 columns; 4h support/resistance as a range bar; glossary collapsible | headless Chromium at 390 px: no horizontal scroll on both tabs |
+
+## Go-live preparation re-review
+
+| # | Area | Issue | Fix | Covered by |
+|---|---|---|---|---|
+| 47 | Security | "withdrawals disabled" was only documented, never enforced: a key with *Withdraw Funds* would start live | `check-live` and live start probe a read-only withdraw endpoint; only Kraken's *Permission denied* passes, anything else refuses (fail closed) | `test_only_permission_denied_passes`; ccxt mapping checked (`EGeneral:Permission denied` → `PermissionDenied`) |
+| 48 | Deploy | container runs as uid 10001 but bind-mounted `data/` and `config/` belong to the host user: journal cannot be created on a fresh VPS | `chown -R 10001:10001 data config` in fase 0 of the test plan | manual step |

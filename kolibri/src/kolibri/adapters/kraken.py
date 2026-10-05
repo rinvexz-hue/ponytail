@@ -24,6 +24,18 @@ from kolibri.scout.scout import ccxt_symbol
 log = logging.getLogger(__name__)
 
 
+async def withdraw_problems(ex: Any, asset: str) -> list[str]:
+    """The key must NOT be able to withdraw. Kraken has no "show my key's rights" call, so probe a
+    read-only withdraw endpoint: only "Permission denied" proves the right is off. Fail closed."""
+    try:
+        await ex.privatePostWithdrawMethods({"asset": asset})
+    except Exception as e:
+        if type(e).__name__ == "PermissionDenied":
+            return []
+        return [f"could not prove the API key lacks withdraw rights ({type(e).__name__})"]
+    return ["API key has WITHDRAW permission: make a new key without 'Withdraw Funds'"]
+
+
 class KrakenAdapter:
     def __init__(self, cfg: Config) -> None:
         import ccxt.pro as ccxtpro  # optional dependency, only needed live
@@ -66,6 +78,7 @@ class KrakenAdapter:
                 charged, cfgd = Decimal(str(fee[k])), getattr(self.caps, k)
                 if charged > cfgd:  # cheaper than configured is fine (conservative); dearer is not
                     problems.append(f"{sym}: Kraken charges {k} {charged:.4%} but config assumes {cfgd:.4%}")
+        problems += await withdraw_problems(self.ex, self.cfg.quote)
         await self.refresh_balances()
         return problems
 
