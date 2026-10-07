@@ -1,0 +1,14 @@
+# Engine is a long-lived process: run it on a VPS / home server, never serverless.
+services:
+  kolibri:
+    build: .
+    restart: unless-stopped        # a restart mid-position is flattened + halted by startup reconciliation
+    env_file: .env
+    environment:
+      DASHBOARD_HOST: 0.0.0.0      # inside the container only; the port below is bound to loopback
+    volumes:
+      - ./data:/app/data           # journal, halts, graduation report, history
+      - ./config:/app/config      # writable: `kolibri optimize --apply` writes config/local.yaml
+    ports:
+      - "127.0.0.1:8080:8080"      # local / VPN (e.g. ssh -L 8080:127.0.0.1:8080) only; never 0.0.0.0
+    stop_grace_period: 30s         # time to flatten on SIGTERM

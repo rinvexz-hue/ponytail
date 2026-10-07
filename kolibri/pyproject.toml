@@ -1,0 +1,54 @@
+[project]
+name = "kolibri"
+version = "0.1.0"
+description = "KOLIBRI: autonomous, risk-first crypto scalping desk (paper by default)"
+requires-python = ">=3.12"
+dependencies = [
+  "pydantic>=2.6",
+  "pyyaml>=6",
+  "fastapi>=0.110",
+  "uvicorn>=0.29",
+]
+
+[project.optional-dependencies]
+live = ["ccxt>=4.3"]
+dev = ["pytest>=8", "pytest-cov", "hypothesis", "ruff", "mypy", "types-PyYAML", "httpx", "ta", "pandas", "ccxt>=4.3"]
+
+[project.scripts]
+kolibri = "kolibri.__main__:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+kolibri = ["dashboard/*.html"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S", "ASYNC", "RUF"]
+ignore = ["S101", "S311", "RUF001", "RUF002", "RUF003"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S", "B"]
+
+[tool.mypy]
+strict = true
+python_version = "3.12"
+mypy_path = "src"
+packages = ["kolibri"]
+
+[[tool.mypy.overrides]]
+module = ["ccxt.*", "ta.*", "pandas.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+filterwarnings = ["error::RuntimeWarning"]
