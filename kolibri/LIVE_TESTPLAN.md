@@ -22,7 +22,6 @@ Commando's staan als `kolibri …`. Met Docker: `docker compose run --rm kolibri
    sudo ufw allow OpenSSH && sudo ufw enable        # alleen SSH open; het dashboard gaat via een tunnel
    chronyc tracking                                  # klok moet synchroon lopen (afwijking < 100 ms)
    git clone https://github.com/rinvexz-hue/ponytail.git && cd ponytail/kolibri
-   git checkout claude/kolibri-scalping-desk
    cp .env.example .env
    mkdir -p data && sudo chown -R 10001:10001 data config   # de container draait als gebruiker 10001
    ```
