@@ -95,3 +95,16 @@ full suite green. Risk + execution coverage is enforced ≥ 85 % in CI.
 |---|---|---|---|---|
 | 47 | Security | "withdrawals disabled" was only documented, never enforced: a key with *Withdraw Funds* would start live | `check-live` and live start probe a read-only withdraw endpoint; only Kraken's *Permission denied* passes, anything else refuses (fail closed) | `test_only_permission_denied_passes`; ccxt mapping checked (`EGeneral:Permission denied` → `PermissionDenied`) |
 | 48 | Deploy | container runs as uid 10001 but bind-mounted `data/` and `config/` belong to the host user: journal cannot be created on a fresh VPS | `chown -R 10001:10001 data config` in fase 0 of the test plan | manual step |
+
+## Venue re-review (checked against Kraken docs and the ccxt source)
+
+| # | Area | Issue | Fix | Covered by |
+|---|---|---|---|---|
+| 49 | Time | Kraken server time is whole seconds: the naive drift (`server − midpoint`) reads up to −1000 ms on a perfect clock, so the 250 ms entry gate blocked most live/paper entries and the 1000 ms kill could fire at random | drift = distance of our request window outside the server's 1 s interval | `test_clock_drift_respects_whole_second_server_time` |
+| 50 | Orders | ccxt subscribes to Kraken executions with a trade snapshot: every reconnect replays recent fills, and the adapter updated its balances before the executioner's dedup | adapter dedups by exec id before touching any state | `test_fills_survive_reconnect_replay_and_missing_ack` |
+| 51 | Resilience | any private-websocket drop ended the fills task → kill → flatten everything (stops are exchange-side, so a 2 s blip cost a full taker exit and a manual re-arm) | private stream retries with backoff; the watchdog kills only if it stays down > `ws_gap_recover_s` | same test + watchdog |
+| 52 | Orders | a create call that timed out was reported as rejected even if Kraken booked it; its fills were then dropped (unknown exchange id) and the position sat unprotected until reconciliation | on a network error the order is looked up by client id; fills also map by `cl_ord_id`; reconciliation back-fills ids | `test_timed_out_create_is_looked_up_by_client_id` |
+| 53 | Money | Kraken Auto Earn books balances as `EUR.F` / `BTC.F`, which the plain balance omits: equity too low, positions could "vanish" | refuse to start / reconcile while such balances exist; fase 4 says to switch Auto Earn off | `test_auto_earn_balances_are_detected` |
+| 54 | Resilience | stale-data kill at 3 s and websocket-gap kill at 5 s were scalping numbers: a quiet EUR book at night would flatten the desk | 30 s / 30 s kill; new entries still need a book ≤ 10 s old | config + `test_each_gate_fails[5_stale]` |
+| 55 | Ops | Kraken rejects concurrent use of one key ("Invalid nonce") and Starter REST budget is 15 points | documented: no check-live while the desk runs; one key per process | docs |
+

@@ -34,8 +34,8 @@ risk:
   loss_streak_cooldown_s: 14400 # one context bar
 
 kill:
-  stale_data_s: 3
-  ws_gap_recover_s: 5
+  stale_data_s: 30             # 15m horizon + exchange-side stops: only a real outage kills
+  ws_gap_recover_s: 30         # ccxt resubscribes; Kraken drops sockets now and then
   max_consecutive_rejects: 3
   max_clock_drift_ms: 1000
   api_error_rate: 0.3           # errors / calls over the last 60 s (min 10 calls)
@@ -45,7 +45,7 @@ gates:
   max_slip_bps: "5"
   cost_multiple: "3"            # gross TP1 distance >= 3 x round-trip cost
   min_net_r: "0.25"
-  max_tick_age_s: 2
+  max_tick_age_s: 10           # no new entry on a book older than this (quiet EUR pairs)
   max_clock_drift_ms: 250
   score_threshold: 70
   event_blackout_min: 10

@@ -107,6 +107,17 @@ def ccxt_symbol(cfg: Config, sym: str) -> str:
     return f"{base}/{sym[len(base):]}"
 
 
+def clock_drift_ms(server_ms: int, t0: int, t1: int, resolution_ms: int = 1000) -> float:
+    """Kraken's server time is whole seconds, so the true time lies in [server, server + 1 s). Drift is how
+    far our request window [t0, t1] falls outside that interval; 0 when they overlap. (A naive
+    server - midpoint reads up to -1000 ms on a perfect clock.) Positive: the server is ahead of us."""
+    if t1 < server_ms:
+        return float(server_ms - t1)
+    if t0 >= server_ms + resolution_ms:
+        return float(server_ms + resolution_ms - t0)
+    return 0.0
+
+
 class Scout:
     """Owns the ccxt.pro public client. Calls back into the runtime; never trades."""
 
@@ -171,7 +182,7 @@ class Scout:
                 t0 = now_ms()
                 server = int(await self.ex.fetch_time())
                 t1 = now_ms()
-                self.clock_drift_ms = server - (t0 + t1) / 2
+                self.clock_drift_ms = clock_drift_ms(server, t0, t1)
             except Exception as e:
                 log.warning("clock check failed: %s", type(e).__name__)
             await asyncio.sleep(60)

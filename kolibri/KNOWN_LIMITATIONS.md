@@ -48,13 +48,20 @@ graduation pipeline exists precisely because they may not survive costs.
 - A position mismatch is only acted on after two consecutive reconciliations (~30 s) to avoid
   killing on in-flight fills; during that window the mismatch persists.
 - Stops are Kraken `stop-loss` orders (market on trigger, last price): in a gap or thin book the fill can be far worse than
-  the stop; risk-per-trade is not a hard cap on realised loss.
+  the stop; risk-per-trade is not a hard cap on realised loss. The trigger is Kraken's default (last
+  trade price), so on a thin EUR book a single outlier print can trigger it.
+- Each partial entry fill replaces the stop (cancel + new order). Kraken penalises cancels in its
+  per-pair rate counter; fine at this order rate, but many tiny partial fills could hit the limit
+  (orders then reject and the desk kills). Upgrade path: Kraken AmendOrder.
+- Starter-tier REST budget is small (15 points, −0.33/s). KOLIBRI uses ~2 calls per 30 s plus a
+  short burst at start-up; do not run other tools on the same key (also: nonce errors).
 
 ## Operations
 - One process, one lock: a slow REST call delays tick handling. Fine at this scale.
 - SQLite writes happen on the event loop (tiny, WAL). Journal grows forever; rotate yearly.
 - Restarting mid-position always flattens and halts (by design).
-- Clock drift is measured against the exchange every 60 s; NTP on the host is still required.
+- Clock drift is measured against the exchange every 60 s, but Kraken's server time has 1 s resolution:
+  only drift outside that second is visible. NTP (chrony) on the host is what really keeps the clock right.
 - The dashboard has bearer-token auth only; its safety relies on being bound to loopback/VPN.
 - The Auditor LLM job from the brief is not implemented.
 - Legal / product: spot only, 1x, long only by default. Kraken margin shorts and futures are not

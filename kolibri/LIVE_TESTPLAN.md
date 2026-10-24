@@ -88,7 +88,8 @@ kolibri graduate --days 120      # leest automatisch het paper-journaal
 ## Fase 4 — Kraken voorbereiden (± 30 min)
 
 1. Maak in Kraken Pro een **aparte subaccount** voor KOLIBRI. Zet er alleen EUR op: voor de canary
-   ± €300–€500.
+   ± €300–€500. Zet op die subaccount **Auto Earn uit**. Saldo in Auto Earn heet bij de API
+   `EUR.F` of `BTC.F`; KOLIBRI ziet dat niet als handelssaldo en weigert te starten zolang het er staat.
 2. Maak een API-sleutel op die subaccount met **alleen**: *Query Funds*, *Query Open Orders &
    Trades*, *Query Closed Orders & Trades*, *Create & Modify Orders*, *Cancel/Close Orders*,
    *WebSocket interface*. **Nooit** *Withdraw Funds*. Zet de **IP-allowlist** op het IP van je VPS.
@@ -100,6 +101,11 @@ kolibri graduate --days 120      # leest automatisch het paper-journaal
    Dit toont je saldo en controleert prijsstap, lotgrootte, minimale ordergrootte, het fee-niveau
    dat Kraken jou echt rekent, en dat de sleutel **geen geld kan opnemen**. Kan hij dat wel (of is
    het niet te bewijzen), dan weigert check-live én weigert live te starten: maak een nieuwe sleutel.
+   Draai check-live alleen als de desk **niet** draait: twee programma's met dezelfde sleutel
+   veroorzaken Kraken-fouten ("Invalid nonce").
+5. Fee-niveau: sinds juli 2026 telt Kraken het beste van je 30-dagen-volume óf je tegoed op Kraken
+   (Assets on Platform). Meer tegoed op Kraken kan je fee-niveau dus verlagen. check-live toont wat
+   je echt betaalt; zet dat in `config/local.yaml`.
 
 **Ga verder als:** check-live `OK` zegt. Wijkt het fee-niveau af, zet het goed in `config/local.yaml`,
 draai `kolibri graduate` opnieuw (de config is veranderd) en dan check-live nog eens.

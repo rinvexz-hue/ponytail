@@ -136,6 +136,9 @@ class Runtime:
                     reason = f"websocket gap on {sym} not recovered in {k.ws_gap_recover_s}s"
                 elif h.connected and now - h.last_msg_ms > k.stale_data_s * 1000:
                     reason = f"stale data on {sym}: {(now - h.last_msg_ms) / 1000:.1f}s"
+            down = getattr(self.adapter, "down_since_ms", None)  # private fills stream (live only)
+            if down is not None and now - down > k.ws_gap_recover_s * 1000:
+                reason = f"private order stream down for more than {k.ws_gap_recover_s}s"
             if abs(self.scout.clock_drift_ms) > k.max_clock_drift_ms:
                 reason = f"clock drift {self.scout.clock_drift_ms:.0f}ms"
             rate_fn = getattr(self.adapter, "error_rate", None)
