@@ -109,3 +109,20 @@ def test_timed_out_create_is_looked_up_by_client_id(cfg: Config, monkeypatch: py
     ex.open = []
     asyncio.run(ad.place(_order("K3"), 1))
     assert got[-1].status is OrderStatus.REJECTED  # truly not there
+
+
+def test_stop_amend_goes_to_kraken_amendorder_by_client_id(cfg: Config, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[Any, ...]] = []
+
+    class AmendEx(Ex):
+        async def edit_order(self, *a: Any) -> dict[str, Any]:
+            calls.append(a)
+            return {}
+
+    ad, _ = _adapter(cfg, monkeypatch, AmendEx())
+    stop = Order("S1", "BTCEUR", Side.SELL, OrderType.STOP_MARKET, D("0.01"), stop_price=D("49000"))
+    ad._by_client["S1"] = stop
+    assert asyncio.run(ad.amend("S1", "BTCEUR", D("0.005"), D("50100"), 1))
+    assert calls == [(None, "BTC/EUR", "market", "sell", "0.005", None,
+                      {"clientOrderId": "S1", "stopLossPrice": "50100"})]
+    assert not asyncio.run(ad.amend("unknown", "BTCEUR", D("1"), D("1"), 1))  # caller falls back to replace

@@ -22,6 +22,10 @@ class ExchangeAdapter(Protocol):
 
     async def cancel(self, client_id: str, symbol: str, now: int) -> None: ...
 
+    async def amend(self, client_id: str, symbol: str, qty: Decimal, stop_price: Decimal, now: int) -> bool:
+        """Change a resting stop in place. True = done (no unprotected gap); False = caller cancels + replaces."""
+        ...
+
     async def positions(self) -> dict[str, Decimal]:
         """Signed base-asset quantity per symbol (net of any configured baseline holdings)."""
         ...

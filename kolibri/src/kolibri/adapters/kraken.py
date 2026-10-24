@@ -145,6 +145,20 @@ class KrakenAdapter:
                 return True
         return False
 
+    async def amend(self, client_id: str, symbol: str, qty: Decimal, stop_price: Decimal, now: int) -> bool:
+        """Kraken AmendOrder keeps the stop resting while it changes: no unprotected gap, no cancel penalty."""
+        o = self._by_client.get(client_id)
+        if o is None or o.type is not OrderType.STOP_MARKET:
+            return False
+        try:
+            await self.ex.edit_order(None, ccxt_symbol(self.cfg, symbol), "market", o.side.value, str(qty), None,
+                                     {"clientOrderId": client_id, "stopLossPrice": str(stop_price)})
+        except Exception:  # unknown outcome is fine: the fallback cancels by client id either way
+            self.calls.append((time.time(), True))
+            return False
+        self.calls.append((time.time(), False))
+        return True
+
     async def cancel(self, client_id: str, symbol: str, now: int) -> None:
         cs = ccxt_symbol(self.cfg, symbol)
         try:

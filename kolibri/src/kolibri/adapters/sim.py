@@ -65,6 +65,9 @@ class SimBroker:
         if self.reject_next > 0:
             self.reject_next -= 1
             reason = "injected_reject"
+        elif (o.side is Side.SELL and not self.caps.supports_reduce_only
+              and o.qty > self._free_base(o.symbol, live.active_ts, cid)):
+            reason = "insufficient_base"  # spot: every open sell (stops too) reserves its quantity
         elif o.type is OrderType.LIMIT_MAKER and o.symbol in self.last and o.price is not None:
             last = self.last[o.symbol]
             if (o.side is Side.BUY and o.price >= last) or (o.side is Side.SELL and o.price <= last):
@@ -76,6 +79,24 @@ class SimBroker:
             return
         o.status = OrderStatus.ACKED
         self._send(now + self.latency, OrderUpdate(cid, OrderStatus.ACKED, now + self.latency))
+
+    async def amend(self, client_id: str, symbol: str, qty: Decimal, stop_price: Decimal, now: int) -> bool:
+        """ponytail: effective at once (Kraken amends inside the matching engine); no amend latency modelled."""
+        live = self.orders.get(client_id)
+        if live is None or not live.order.open or live.cancel_ts is not None or live.order.filled:
+            return False
+        o = live.order
+        if o.side is Side.SELL and not self.caps.supports_reduce_only and qty > self._free_base(symbol, now, client_id):
+            return False
+        o.qty, o.stop_price = qty, stop_price
+        return True
+
+    def _free_base(self, symbol: str, at: int, exclude: str) -> Decimal:
+        """Holdings not reserved by other open sells; a cancel effective by `at` has released its reserve."""
+        held = sum((lv.order.remaining for c, lv in self.orders.items()
+                    if c != exclude and lv.order.symbol == symbol and lv.order.side is Side.SELL and lv.order.open
+                    and not (lv.cancel_ts is not None and lv.cancel_ts <= at)), D0)
+        return self.base[symbol] - held
 
     async def cancel(self, client_id: str, symbol: str, now: int) -> None:
         live = self.orders.get(client_id)

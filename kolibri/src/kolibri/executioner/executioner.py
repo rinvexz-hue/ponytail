@@ -229,11 +229,15 @@ class Executioner:
     async def _on_exit(self, o: Order, u: OrderUpdate, now: int) -> None:
         sym = o.symbol
         pos = self.positions.get(sym)
-        if u.status is OrderStatus.REJECTED and o.purpose in ("stop", "exit") and pos is not None:
+        if u.status is OrderStatus.REJECTED and pos is not None:
             if o.purpose == "stop":
                 self.on_alarm(f"protective stop rejected on {sym}: {u.reason}", now)
-            else:
+            elif o.purpose == "exit":
                 self.exiting.discard(sym)  # retried on next tick
+            else:  # a synthetic TP was refused: protect the full position again, retry on a later tick
+                if o.purpose == "tp1" and not pos.tp1_done:
+                    pos.tp_qty = o.qty
+                await self._sync_stop(sym, now)
             return
         if u.status is OrderStatus.CANCELED and o.purpose == "stop" and pos is not None \
                 and self.stop_id.get(sym) == o.client_id:
@@ -293,10 +297,21 @@ class Executioner:
         if cur is not None and cur.open and cur.stop_price == pos.stop and cur.remaining == pos.qty:
             return
         if cur is not None and cur.open:
+            if await self._amend_stop(cur, pos.qty, pos.stop, now):
+                return
             await self._cancel(cur.client_id, now)
         o = await self._place(sym, "stop", pos.direction, False, OrderType.STOP_MARKET, pos.qty, now,
                               stop_price=pos.stop)
         self.stop_id[sym] = o.client_id
+
+    async def _amend_stop(self, cur: Order, qty: Decimal, stop: Decimal, now: int) -> bool:
+        if cur.filled or cur.client_id in self.canceling:
+            return False
+        if not await self.ex.amend(cur.client_id, cur.symbol, qty, stop, now):
+            return False
+        cur.qty, cur.stop_price = qty, stop
+        self.j.emit("order_amend", now, cur.symbol, id=cur.client_id, qty=qty, stop=stop)
+        return True
 
     # ---- time-driven -----------------------------------------------------------------------
     async def on_tick(self, sym: str, price: Decimal, now: int) -> None:
@@ -331,8 +346,9 @@ class Executioner:
 
     async def _synthetic_targets(self, pos: Position, price: Decimal, now: int) -> None:
         """Spot venues: a resting TP would lock balance the stop needs, so the TP is a market exit fired
-        once price trades through the level. ponytail: pays taker + slippage instead of maker, and the
-        remainder is unprotected for one cancel/replace round trip; upgrade path is OCO order legs."""
+        once price trades through the level. The stop is first amended down to the remainder (it keeps
+        protecting it); only a full exit, or a venue without amend, pulls the stop first.
+        ponytail: pays taker + slippage instead of maker."""
         s, sym = pos.direction.sign, pos.symbol
         if any(o.purpose in ("tp1", "tp2") and o.open for o in self.open_orders(sym)):
             return  # a synthetic exit is already in flight
@@ -342,9 +358,13 @@ class Executioner:
             qty, purpose = pos.qty, "tp2"
         else:
             return
-        sid = self.stop_id.get(sym)
-        if sid:
-            await self._cancel(sid, now)
+        stop = self.orders.get(self.stop_id.get(sym, ""))
+        rest = pos.qty - qty
+        if stop is not None and stop.open:
+            assert stop.stop_price is not None
+            if not (rest > 0 and await self._amend_stop(stop, rest, stop.stop_price, now)):
+                self.stop_id.pop(sym, None)  # our own cancel: not a venue cancel to "restore" at full size
+                await self._cancel(stop.client_id, now)
         await self._place(sym, purpose, pos.direction, False, OrderType.MARKET, qty, now)
 
     async def on_bar(self, sym: str, atr: Decimal, now: int) -> None:

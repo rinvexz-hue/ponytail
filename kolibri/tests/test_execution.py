@@ -288,6 +288,37 @@ def test_spot_tp_is_synthetic_and_never_oversells(cfg: Config) -> None:
     assert [(o.purpose, o.qty) for o in resting] == [("stop", D("0.5"))]
     tp_fill = next(o for o in h.exe.orders.values() if o.purpose == "tp1")
     assert tp_fill.type is OrderType.MARKET  # honest cost model: taker, not maker
+    assert not h.alarms  # the venue reserves sell qty: a full-size stop after TP1 would be refused
+    stops = [o for o in h.exe.orders.values() if o.purpose == "stop"]
+    assert len(stops) == 1  # amended down then to breakeven, never pulled: the remainder stayed protected
+
+
+def test_spot_tp_without_amend_never_restores_a_full_size_stop(cfg: Config) -> None:
+    h = Harness(cheap(cfg))
+
+    async def no_amend(*a: object) -> bool:
+        return False
+
+    h.broker.amend = no_amend  # type: ignore[method-assign]
+    filled_long(h)
+    h.tick(S, T0 + 1000, "101.01")
+    h.tick(S, T0 + 1200, "101.00")
+    h.tick(S, T0 + 1500, "101.00")
+    assert not h.alarms
+    resting = [lv.order for lv in h.broker.orders.values() if lv.order.open]
+    assert [(o.purpose, o.qty) for o in resting] == [("stop", D("0.5"))]
+
+
+def test_refused_synthetic_tp_keeps_the_position_protected(cfg: Config) -> None:
+    h = Harness(cheap(cfg))
+    filled_long(h)
+    h.broker.reject_next = 1  # the TP1 market order is refused
+    h.tick(S, T0 + 1000, "101.01")
+    h.tick(S, T0 + 1200, "101.00")
+    pos = h.exe.positions[S]
+    assert pos.qty == D("1") and not pos.tp1_done and pos.tp_qty == D("0.5")  # TP re-armed
+    resting = [lv.order for lv in h.broker.orders.values() if lv.order.open]
+    assert [(o.purpose, o.qty) for o in resting] == [("stop", D("1"))]  # full size protected again
 
 
 def test_spot_mean_reversion_target_exits_everything(cfg: Config) -> None:

@@ -41,8 +41,10 @@ graduation pipeline exists precisely because they may not survive costs.
 - History: Kraken candles have no taker-buy volume, so bars are rebuilt from public trades. The
   first download is slow (hours per few months per symbol); live bars are appended locally so
   restarts only fetch the gap.
-- Spot has no reduce-only: between cancelling a stop and placing its replacement (TP1, trail,
-  breakeven) the remainder is briefly unprotected (one REST round trip). Upgrade path: OCO legs.
+- Spot has no reduce-only, so stops are changed in place with Kraken AmendOrder (size after a
+  partial fill or TP1, price for breakeven and trail): the position stays protected. If an amend
+  fails, KOLIBRI falls back to cancel + new stop, and for that one REST round trip the remainder is
+  unprotected. A full synthetic exit (TP2 / mean-reversion target) pulls the stop first.
 - Every order asks Kraken to charge fees in EUR (`fciq`), so base holdings match the desk exactly;
   a fill reporting its fee in another currency is approximated from the configured rate.
 - A position mismatch is only acted on after two consecutive reconciliations (~30 s) to avoid
@@ -50,9 +52,6 @@ graduation pipeline exists precisely because they may not survive costs.
 - Stops are Kraken `stop-loss` orders (market on trigger, last price): in a gap or thin book the fill can be far worse than
   the stop; risk-per-trade is not a hard cap on realised loss. The trigger is Kraken's default (last
   trade price), so on a thin EUR book a single outlier print can trigger it.
-- Each partial entry fill replaces the stop (cancel + new order). Kraken penalises cancels in its
-  per-pair rate counter; fine at this order rate, but many tiny partial fills could hit the limit
-  (orders then reject and the desk kills). Upgrade path: Kraken AmendOrder.
 - Starter-tier REST budget is small (15 points, −0.33/s). KOLIBRI uses ~2 calls per 30 s plus a
   short burst at start-up; do not run other tools on the same key (also: nonce errors).
 
