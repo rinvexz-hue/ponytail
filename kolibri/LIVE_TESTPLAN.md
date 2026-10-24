@@ -25,6 +25,13 @@ Commando's staan als `kolibri …`. Met Docker: `docker compose run --rm kolibri
    cp .env.example .env
    mkdir -p data && sudo chown -R 10001:10001 data config   # de container draait als gebruiker 10001
    ```
+   Ubuntu installeert beveiligingsupdates automatisch. Een update van Docker herstart de container,
+   en een herstart met een open positie betekent: alles verkopen en stoppen. Sluit Docker daarom uit
+   van automatische updates en update het zelf als er geen positie open staat:
+   ```bash
+   echo 'Unattended-Upgrade::Package-Blacklist { "docker.io"; "containerd"; "runc"; };' \
+     | sudo tee /etc/apt/apt.conf.d/51kolibri-no-docker-autoupdate
+   ```
 3. Zet in `.env`: `DASHBOARD_TOKEN` (32 willekeurige tekens: `openssl rand -hex 16`).
 4. Telegram: maak een bot via @BotFather → zet `TELEGRAM_BOT_TOKEN`; stuur je bot een bericht en
    haal je chat-id op via `https://api.telegram.org/bot<TOKEN>/getUpdates` → `TELEGRAM_CHAT_ID`.

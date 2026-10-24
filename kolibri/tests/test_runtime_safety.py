@@ -182,6 +182,9 @@ class FakeExchange:
     async def fetch_time(self) -> int:
         return int(time.time() * 1000)
 
+    async def fetch_status(self) -> dict[str, str]:
+        return {"status": "ok"}
+
     async def close(self) -> None:
         pass
 

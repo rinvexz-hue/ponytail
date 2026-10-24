@@ -89,7 +89,7 @@ The same `Desk` code runs backtest, paper and live; only the price source and ad
 ## Gates (first failing gate is journaled)
 
 `0_venue_no_short`, `0_dedup`, `1_regime`, `1_stop_distance`, `2_htf`, `2_leader`, `3_spread`,
-`3_slippage`, `score`, `4_cost`, `4_net_r`, `5_data_gap`, `5_stale`, `5_clock`, `6_blackout`,
+`3_slippage`, `score`, `4_cost`, `4_net_r`, `5_data_gap`, `5_stale`, `5_clock`, `5_venue`, `6_blackout`,
 `7_cooldown`, `8_risk_*`. Each has a pass **and** a fail test (`tests/test_gates.py`).
 
 ## Deliberate deviations from the brief (and why)

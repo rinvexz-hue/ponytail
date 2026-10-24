@@ -32,6 +32,7 @@ class Health:
     tick_age_s: float = 0.0
     clock_drift_ms: float = 0.0
     connected: bool = True
+    venue_ok: bool = True  # Kraken system status "online" (not maintenance / cancel-only / post-only)
 
 
 def clamp(x: float, lo: float = 0.0, hi: float = 1.0) -> float:
@@ -340,6 +341,8 @@ class Analyst:
             return rej("5_stale", f"tick age {health.tick_age_s:.1f}s")
         if abs(health.clock_drift_ms) > g.max_clock_drift_ms:
             return rej("5_clock", f"drift {health.clock_drift_ms:.0f}ms")
+        if not health.venue_ok:  # market exits and new stops would be refused there
+            return rej("5_venue", "Kraken not fully online")
         # 6. blackouts / session
         why = in_blackout(c.ts, cfg)
         if why:

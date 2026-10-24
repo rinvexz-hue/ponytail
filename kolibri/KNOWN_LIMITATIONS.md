@@ -52,6 +52,9 @@ graduation pipeline exists precisely because they may not survive costs.
 - Stops are Kraken `stop-loss` orders (market on trigger, last price): in a gap or thin book the fill can be far worse than
   the stop; risk-per-trade is not a hard cap on realised loss. The trigger is Kraken's default (last
   trade price), so on a thin EUR book a single outlier print can trigger it.
+- Kraken maintenance phases (cancel-only / post-only): no new entries (`5_venue`), and open
+  positions keep their resting stops, but market exits (synthetic TP, time stop, flatten) are refused
+  until Kraken is fully online again; refused exits retry every tick, a refused stop triggers a kill.
 - Starter-tier REST budget is small (15 points, −0.33/s). KOLIBRI uses ~2 calls per 30 s plus a
   short burst at start-up; do not run other tools on the same key (also: nonce errors).
 

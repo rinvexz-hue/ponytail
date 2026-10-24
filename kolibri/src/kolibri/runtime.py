@@ -118,7 +118,8 @@ class Runtime:
         now = now_ms()
         for sym, h in self.scout.health.items():
             self.desk.health[sym] = Health(tick_age_s=(now - h.last_msg_ms) / 1000 if h.last_msg_ms else 1e9,
-                                           clock_drift_ms=self.scout.clock_drift_ms, connected=h.connected)
+                                           clock_drift_ms=self.scout.clock_drift_ms, connected=h.connected,
+                                           venue_ok=self.scout.venue_ok)
 
     async def watchdog(self) -> None:
         k = self.cfg.kill

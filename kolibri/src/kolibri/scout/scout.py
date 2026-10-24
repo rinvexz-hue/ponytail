@@ -128,6 +128,7 @@ class Scout:
         self.on_trade_cb, self.on_book_cb = on_trade, on_book
         self.health = {s: SymbolHealth() for s in cfg.symbols}
         self.clock_drift_ms = 0.0
+        self.venue_ok = True
         self.running = True
 
     def _mark(self, sym: str, ok: bool) -> None:
@@ -185,6 +186,11 @@ class Scout:
                 self.clock_drift_ms = clock_drift_ms(server, t0, t1)
             except Exception as e:
                 log.warning("clock check failed: %s", type(e).__name__)
+            try:  # unknown status = no new entries (open positions keep their exchange stops)
+                self.venue_ok = (await self.ex.fetch_status()).get("status") == "ok"
+            except Exception as e:
+                self.venue_ok = False
+                log.warning("venue status check failed: %s", type(e).__name__)
             await asyncio.sleep(60)
 
     async def warmup_bars(self, sym: str, days: int, data_dir: str | None = None) -> list[Bar]:

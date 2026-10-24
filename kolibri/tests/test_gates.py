@@ -65,6 +65,7 @@ def test_default_fees_block_small_targets(cfg: Config) -> None:
         ({}, Regime.TREND_UP, Health(connected=False), "5_data_gap"),
         ({}, Regime.TREND_UP, Health(tick_age_s=1e3), "5_stale"),
         ({}, Regime.TREND_UP, Health(clock_drift_ms=300), "5_clock"),
+        ({}, Regime.TREND_UP, Health(venue_ok=False), "5_venue"),
         ({"volz": 0.1, "taker_ratio": 0.5, "bar_delta": -1.0, "macd_slope": -1.0, "leader_mom5_atr": -0.5},
          Regime.TREND_UP, Health(), "score"),
     ],
