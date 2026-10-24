@@ -220,6 +220,22 @@ def test_flatten_cancels_everything_and_exits(cfg: Config) -> None:
     assert h.broker.base[S] == 0
 
 
+def test_refused_exit_puts_the_stop_back_and_retries(cfg: Config) -> None:
+    from kolibri.executioner.executioner import EXIT_RETRY_MS
+
+    h = Harness(cfg)
+    filled_long(h)
+    h.broker.reject_next = 1  # e.g. Kraken in cancel-only mode refuses the market exit
+    asyncio.run(h.exe.flatten_all("kill", T0 + 500))
+    h.tick(S, T0 + 700, "100.10")
+    assert S in h.exe.positions
+    resting = [lv.order for lv in h.broker.orders.values() if lv.order.open]
+    assert [(o.purpose, o.qty) for o in resting] == [("stop", D("1"))]  # protected while we wait
+    h.tick(S, T0 + 700 + EXIT_RETRY_MS, "100.10")  # retry: pull the stop, exit again
+    h.tick(S, T0 + 1_000 + EXIT_RETRY_MS, "100.10")
+    assert not h.exe.positions and h.closed[0].exit_reason == "kill" and h.broker.base[S] == 0
+
+
 def test_reconcile_unexpected_position_is_flattened(cfg: Config) -> None:
     h = Harness(cfg)
     h.tick("ETHEUR", T0, "100")

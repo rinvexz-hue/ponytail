@@ -29,6 +29,8 @@ from kolibri.core.models import (
 )
 from kolibri.risk.officer import Approval
 
+EXIT_RETRY_MS = 30_000  # refused market exit: retry pace (each retry costs a stop cancel in the rate counter)
+
 
 @dataclass(slots=True)
 class EntryState:
@@ -55,6 +57,7 @@ class Executioner:
         self.stop_id: dict[str, str] = {}
         self.canceling: set[str] = set()
         self.exiting: set[str] = set()
+        self.exit_retry: dict[str, tuple[int, str]] = {}  # refused exit: (retry at, reason); stop rests meanwhile
         self.marks: dict[str, Decimal] = {}
         self.consecutive_rejects = 0
         self.seq = 0
@@ -232,8 +235,10 @@ class Executioner:
         if u.status is OrderStatus.REJECTED and pos is not None:
             if o.purpose == "stop":
                 self.on_alarm(f"protective stop rejected on {sym}: {u.reason}", now)
-            elif o.purpose == "exit":
-                self.exiting.discard(sym)  # retried on next tick
+            elif o.purpose == "exit":  # e.g. Kraken cancel-only: put the stop back, retry the exit shortly
+                self.exiting.discard(sym)
+                self.exit_retry[sym] = (now + EXIT_RETRY_MS, pos.exit_reason or "exit")
+                await self._sync_stop(sym, now)
             else:  # a synthetic TP was refused: protect the full position again, retry on a later tick
                 if o.purpose == "tp1" and not pos.tp1_done:
                     pos.tp_qty = o.qty
@@ -281,6 +286,7 @@ class Executioner:
         del self.positions[sym]
         self.stop_id.pop(sym, None)
         self.exiting.discard(sym)
+        self.exit_retry.pop(sym, None)
         risk_money = pos.initial_qty * pos.risk_per_unit
         t = ClosedTrade(symbol=sym, setup=pos.setup, direction=pos.direction, opened_ts=pos.opened_ts, closed_ts=ts,
                         entry=pos.entry, qty=pos.initial_qty, pnl=pos.realized, fees=pos.fees,
@@ -331,6 +337,13 @@ class Executioner:
         s = pos.direction.sign
         if (price - pos.extreme) * s > 0:
             pos.extreme = price
+        retry = self.exit_retry.get(sym)
+        if retry is not None and sym not in self.exiting:
+            if now < retry[0]:
+                return
+            del self.exit_retry[sym]
+            await self.flatten(sym, retry[1], now)
+            return
         if sym in self.exiting:
             if not any(o.purpose == "exit" for o in self.open_orders(sym)):
                 await self._place(sym, "exit", pos.direction, False, OrderType.MARKET, pos.qty, now)
