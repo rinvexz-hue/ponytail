@@ -417,6 +417,11 @@ class Executioner:
         await self.pump(now)
         ex_pos = await self.ex.positions()
         ex_orders = await self.ex.open_orders()
+        # foreign orders first: a stop left by a previous run still reserves the holdings an orphan exit must sell
+        for cid, sym in ex_orders.items():
+            if cid not in self.orders:
+                self.j.emit("risk", now, sym, event="foreign_order_canceled", id=cid)
+                await self.ex.cancel(cid, sym, now)
         problems: list[str] = []
         seen: set[str] = set()
         for sym in sorted(set(ex_pos) | set(self.positions)):
@@ -439,10 +444,6 @@ class Executioner:
                             exit_reason="orphan")
                         await self.flatten(sym, "orphan", now)
         self._mismatch = seen
-        for cid, sym in ex_orders.items():
-            if cid not in self.orders:
-                self.j.emit("risk", now, sym, event="foreign_order_canceled", id=cid)
-                await self.ex.cancel(cid, sym, now)
         for sym in list(self.positions):
             sid = self.stop_id.get(sym, "")
             stop = self.orders.get(sid)
