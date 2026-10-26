@@ -1,0 +1,20 @@
+# Public entry for TradingView webhooks ONLY (docker compose --profile webhook up -d).
+# TLS certificate from Let's Encrypt for TV_WEBHOOK_DOMAIN; only TradingView's webhook IPs may POST /tv
+# (list: tradingview.com/support/solutions/43000529348). Everything else gets 404. The dashboard is
+# never exposed here: it stays on 127.0.0.1:8080 (SSH tunnel).
+{$TV_WEBHOOK_DOMAIN} {
+	@tradingview {
+		method POST
+		path /tv
+		remote_ip 52.89.214.238 34.212.75.30 54.218.53.128 52.32.178.7
+	}
+	handle @tradingview {
+		request_body {
+			max_size 4KB
+		}
+		reverse_proxy kolibri:8090
+	}
+	handle {
+		respond 404
+	}
+}

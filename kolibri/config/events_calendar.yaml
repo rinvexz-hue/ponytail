@@ -1,0 +1,6 @@
+# High-impact macro events (UTC). New entries are blacked out +- gates.event_blackout_min.
+# Maintain by hand (FOMC, CPI, NFP ...). Dates below are examples; verify before relying on them.
+events:
+  - {ts: "2026-10-02T12:30:00Z", name: "US NFP"}
+  - {ts: "2026-10-14T12:30:00Z", name: "US CPI"}
+  - {ts: "2026-10-28T18:00:00Z", name: "FOMC decision"}

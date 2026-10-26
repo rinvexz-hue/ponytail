@@ -1,0 +1,33 @@
+# Engine is a long-lived process: run it on a VPS / home server, never serverless.
+services:
+  kolibri:
+    build: .
+    restart: unless-stopped        # a restart mid-position is flattened + halted by startup reconciliation
+    env_file: .env
+    environment:
+      DASHBOARD_HOST: 0.0.0.0      # inside the container only; the port below is bound to loopback
+    volumes:
+      - ./data:/app/data           # journal, halts, graduation report, history
+      - ./config:/app/config      # writable: `kolibri optimize --apply` writes config/local.yaml
+    ports:
+      - "127.0.0.1:8080:8080"      # local / VPN (e.g. ssh -L 8080:127.0.0.1:8080) only; never 0.0.0.0
+    stop_grace_period: 30s         # time to flatten on SIGTERM
+    # port 8090 (TradingView webhook) is NOT published: only the caddy service below reaches it
+
+  # Optional: TradingView webhook entry. Start with: docker compose --profile webhook up -d
+  caddy:
+    image: caddy:2
+    profiles: ["webhook"]
+    restart: unless-stopped
+    environment:
+      TV_WEBHOOK_DOMAIN: ${TV_WEBHOOK_DOMAIN:-}  # required for this profile; caddy refuses to start without it
+    ports:
+      - "80:80"                    # Let's Encrypt challenge + redirect to https
+      - "443:443"                  # TradingView only posts to port 80/443
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+    depends_on: [kolibri]
+
+volumes:
+  caddy-data:
