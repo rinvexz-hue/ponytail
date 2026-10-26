@@ -175,3 +175,60 @@ maand opnieuw `kolibri graduate` (het rapport verloopt na 30 dagen).
 - Paper en live hebben elk een eigen journaal: `data/kolibri-paper.sqlite` en `data/kolibri-live.sqlite`.
 - Geen trade is ook een uitkomst: bij Kraken-fees verwacht je weinig trades.
 - Dit systeem garandeert geen winst. Zet nooit geld in dat je niet kunt missen.
+
+---
+
+## Bijlage — de TradingView-indicator "GOD MODE SCALPER" testen
+
+De broncode van die indicator is afgeschermd. KOLIBRI kan hem daarom op twee manieren gebruiken.
+Begin met A: dat kost niets en geeft binnen een uur een eerlijk antwoord.
+
+### A. De nagebouwde versie (setup `E_gm`)
+
+Dezelfde opzet, maar met eigen, open regels:
+- koersrichting boven de lange trendlijn (EMA 200) en een zero-lag-trendlijn die meedraait;
+- de slotkoers breekt het hoogste punt van de laatste 20 candles;
+- stop op 1,2× ATR en één doel op 1,5× het risico.
+
+De setup staat standaard aan, maar gaat door alle KOLIBRI-controles. Wil je de regels kaal testen
+(zoals de indicator ze zelf zou handelen), zet dan in `config/local.yaml`:
+```yaml
+strategy:
+  raw_setups: [E_gm]
+```
+en draai `kolibri backtest --days 120`. Kijk in de uitvoer bij `by_setup` → `E_gm`: het
+gemiddelde resultaat per trade (`expectancy_r`) **na kosten**. Negatief = niet doen.
+
+### B. De echte indicator via TradingView-alerts (webhook)
+
+Nodig:
+- een betaald TradingView-abonnement met webhooks (TradingView eist ook 2FA);
+- een domeinnaam die naar je VPS wijst (gratis kan via duckdns.org).
+
+1. Zet in `.env`:
+   - `TV_WEBHOOK_SECRET=` met als waarde de uitvoer van `openssl rand -hex 16`;
+   - `TV_WEBHOOK_DOMAIN=jouwnaam.duckdns.org`.
+2. Open poort 80 en 443 en start KOLIBRI met de webhook-ingang:
+   ```bash
+   sudo ufw allow 80 && sudo ufw allow 443
+   docker compose --profile webhook up -d
+   ```
+   Alleen de vier IP-adressen van TradingView mogen `POST /tv` aanroepen; al het andere krijgt 404.
+   Het dashboard blijft gewoon alleen via je SSH-tunnel bereikbaar.
+3. Maak in TradingView op een Kraken-grafiek (bijv. `KRAKEN:BTCEUR`) een alert op het
+   **BUY**-signaal van de indicator:
+   - Webhook URL: `https://jouwnaam.duckdns.org/tv`
+   - Bericht (exact zo, met je eigen geheim):
+     ```json
+     {"secret": "JOUW_TV_WEBHOOK_SECRET", "symbol": "{{ticker}}", "side": "buy"}
+     ```
+   KOLIBRI zet de stop zelf op 1,2× ATR en het doel op 1,5R. Gebruik `"sl"` en `"tp"` alleen als je
+   vaste getallen wilt meesturen.
+4. Een SELL-signaal kan op Kraken spot niet uitgevoerd worden (geen short). KOLIBRI legt het vast als
+   afgewezen.
+5. Elk signaal gaat door de normale controles. Wil je in **paper** kaal testen hoe de indicator het
+   doet, zet dan `raw_setups: [TV_signal]` (of `[E_gm, TV_signal]`) in `config/local.yaml`.
+   Live weigert te starten zolang er iets in `raw_setups` staat.
+
+Op het dashboard zie je per signaal of het een trade werd, en anders welke controle het tegenhield
+("Waarom signalen werden afgewezen").

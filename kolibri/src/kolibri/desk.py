@@ -28,7 +28,9 @@ class Desk:
         self.analyst = Analyst(cfg)
         self.risk = RiskOfficer(cfg, journal, equity0)
         tf = cfg.timeframes
-        self.engines = {s: FeatureEngine(s, cfg.regime.squeeze_pct, tf.context_minutes) for s in cfg.symbols}
+        st = cfg.strategy
+        self.engines = {s: FeatureEngine(s, cfg.regime.squeeze_pct, tf.context_minutes, st.gm_trend_len,
+                                         st.gm_zlema_len) for s in cfg.symbols}
         self.signal_aggs = {s: Aggregator(s, tf.signal_minutes * MINUTE_MS) for s in cfg.symbols}
         self.features: dict[str, Features | None] = {}
         self.books: dict[str, Book] = {}
@@ -97,6 +99,22 @@ class Desk:
                 await self._consider(res, ts)
         self.equity_curve.append((ts, self.equity()))
         await self._handle_alarms()
+
+    async def on_signal(self, sym: str, side: str, ts: int, stop: Decimal | None = None,
+                        target: Decimal | None = None) -> Intent | Rejection:
+        """External signal (TradingView webhook) -> the same gates, risk review and execution."""
+        d = Direction.LONG if side == "buy" else Direction.SHORT
+        f = self.features.get(sym)
+        price = self.exe.marks.get(sym) or (Decimal(repr(f.close)) if f is not None else Decimal(0))
+        res = self.analyst.external(f, sym, d, price, ts, self.equity(), self.health[sym], self.books.get(sym),
+                                    stop, target)
+        if isinstance(res, Rejection):
+            self.j.emit("rejection", ts, sym, setup=res.setup, direction=res.direction.value, gate=res.gate,
+                        detail=res.detail, score=res.score)
+        else:
+            await self._consider(res, ts)
+        await self._handle_alarms()
+        return res
 
     async def _consider(self, intent: Intent, ts: int) -> None:
         c = intent.candidate

@@ -89,6 +89,18 @@ strategy:
   rsi_extreme: 25
   breakout_volz: 1.5
   sweep_volz: 1.5
+  enabled_setups: [A_pullback, B_meanrev, C_breakout, D_sweep, E_gm]
+  # Setups listed here skip KOLIBRI's edge filters (regime, 4h, score, cost, expected-R, blackouts,
+  # time stop): they trade their own rules, still under risk limits, data health and exchange stops.
+  # Paper and backtest only: live refuses to start while this list is not empty.
+  raw_setups: []
+  # E_gm: rebuild of "GOD MODE SCALPER | Kmind" (protected source; rules inferred, not copied):
+  # trend line EMA(gm_trend_len), zero-lag EMA turning, breakout of the 20-bar high/low,
+  # stop gm_atr_mult x ATR, single target at gm_rr x risk.
+  gm_trend_len: 200
+  gm_zlema_len: 21
+  gm_atr_mult: "1.2"
+  gm_rr: "1.5"
 
 execution:
   latency_ms: 150

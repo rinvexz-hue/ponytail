@@ -33,6 +33,7 @@ from kolibri.scout.scout import BarBuilder, Scout, now_ms
 log = logging.getLogger(__name__)
 DAY_MS = 1440 * MINUTE_MS
 LIVE_CONFIRM = "I_ACCEPT_THE_RISK"
+WEBHOOK_PORT = 8090  # container-internal; Caddy forwards public POST /tv here
 
 
 class LiveRefused(SystemExit):
@@ -44,6 +45,8 @@ def assert_mode_allowed(cfg: Config) -> str | None:
     Returns the unlocked stage: "canary" (orders capped) or "live"; None in paper mode."""
     if cfg.mode != "live":
         return None
+    if cfg.strategy.raw_setups:
+        raise LiveRefused(f"refusing live: strategy.raw_setups {list(cfg.strategy.raw_setups)} is paper/backtest only")
     if os.environ.get("LIVE_CONFIRM") != LIVE_CONFIRM:
         raise LiveRefused(f"refusing live: set LIVE_CONFIRM={LIVE_CONFIRM}")
     stage, why = check_graduation(cfg)
@@ -83,7 +86,7 @@ class Runtime:
         # dashboard). Live adapter calls await the network, and without it two tasks could interleave
         # inside the Executioner (e.g. place two stops). Ceiling: a slow REST call delays tick handling.
         self.lock = asyncio.Lock()
-        self.server: Any = None
+        self.servers: dict[str, Any] = {}  # coroutine name -> uvicorn server: stopped via should_exit, not cancel
         self.started_ms = now_ms()
 
     # ---- market callbacks --------------------------------------------------------------------
@@ -250,6 +253,11 @@ class Runtime:
             coros.append(stream())
         if serve_dashboard:
             coros.append(self.serve_dashboard())
+        tv_secret = os.environ.get("TV_WEBHOOK_SECRET", "")
+        if tv_secret:
+            if len(tv_secret) < 16:
+                raise LiveRefused("TV_WEBHOOK_SECRET must be at least 16 characters")
+            coros.append(self.serve_webhook())
         self.tasks = [asyncio.create_task(c) for c in coros]
         for t in self.tasks:
             t.add_done_callback(self._task_died)
@@ -271,8 +279,29 @@ class Runtime:
         host = os.environ.get("DASHBOARD_HOST", self.cfg.dashboard.host)  # 0.0.0.0 only inside docker
         server = uvicorn.Server(uvicorn.Config(create_app(self), host=host,
                                                port=self.cfg.dashboard.port, log_level="warning"))
-        self.server = server
+        self.servers["serve_dashboard"] = server
         await server.serve()
+
+    async def serve_webhook(self) -> None:
+        import uvicorn
+
+        from kolibri.webhook import create_webhook_app
+
+        # inside the container only; Caddy is the sole public entry (TLS + TradingView IP allowlist)
+        server = uvicorn.Server(uvicorn.Config(create_webhook_app(self), host="0.0.0.0",  # noqa: S104
+                                               port=WEBHOOK_PORT, log_level="warning"))
+        self.servers["serve_webhook"] = server
+        await server.serve()
+
+    async def on_signal(self, sym: str, side: str, stop: Decimal | None, target: Decimal | None) -> None:
+        """An external (TradingView) signal: same gates, risk and execution as the built-in setups."""
+        try:
+            async with self.lock:
+                now = now_ms()
+                self.j.emit("signal", now, sym, source="tradingview", side=side, stop=stop, tp=target)
+                await self.desk.on_signal(sym, side, now, stop, target)
+        except Exception:
+            log.exception("webhook signal for %s failed", sym)  # one bad signal must not take the desk down
 
     async def shutdown(self) -> None:
         self.stopping.set()
@@ -286,10 +315,10 @@ class Runtime:
                     break
             if self.desk.exe.positions:
                 log.critical("shutdown with open positions; exchange-side stops remain in place")
-        if self.server is not None:
-            self.server.should_exit = True  # uvicorn stops cleanly; cancelling it mid-serve can hang
+        for server in self.servers.values():
+            server.should_exit = True  # uvicorn stops cleanly; cancelling it mid-serve can hang
         for t in self.tasks:
-            if self.server is None or t.get_coro().__name__ != "serve_dashboard":  # type: ignore[union-attr]
+            if t.get_coro().__name__ not in self.servers:  # type: ignore[union-attr]
                 t.cancel()
         if self.tasks:
             await asyncio.wait(self.tasks, timeout=10)

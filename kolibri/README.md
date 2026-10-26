@@ -65,7 +65,7 @@ docker compose up -d --build           # same, as a long-lived service (VPS / ho
 
 ```
 Scout (trades -> closed 1m bars, L2 book, health, clock drift)
-  -> Analyst: features (closed bars only) -> regime -> setups A-D -> hard gates -> soft score -> Intent
+  -> Analyst: features (closed bars only) -> regime -> setups A-E (+ TradingView webhook) -> gates -> score -> Intent
   -> Risk Officer: cooldowns, halts, sizing (0.25 % incl. costs), heat, correlation, exposure -> qty
   -> Executioner: post-only entry -> exchange-side stop -> TP1 50 % -> BE+fees -> 1.5 ATR trail / time stop
   -> Auditor + Journal: every intent, rejection (with gate), order, fill, trade, kill -> SQLite
@@ -86,9 +86,23 @@ The same `Desk` code runs backtest, paper and live; only the price source and ad
 | `auditor/` | daily report, rejection histogram, drift vs backtest, graduation report |
 | `alerts/`, `dashboard/` | Telegram (severity, rate limit, CRITICAL repeats until `/ack`), local-only dashboard |
 
+## Setup E and TradingView signals
+
+- **`E_gm`** rebuilds the idea of the protected TradingView script *GOD MODE SCALPER | Kmind*
+  (rules inferred from its description and chart labels, not its code): close on the trend side of
+  EMA(200), zero-lag EMA(21) turning with it, close breaking the 20-bar high/low; stop 1.2 ATR, one
+  target at 1.5R (`strategy.gm_*`).
+- **`TV_signal`**: any TradingView alert can drive the desk through `POST /tv` (webhook app on
+  port 8090 inside Docker, public only via the `caddy` profile: TLS + TradingView's four IPs).
+  Message: `{"secret": "...", "symbol": "{{ticker}}", "side": "buy"}`, optional `"sl"`/`"tp"`.
+  Missing stop/target follow the E_gm rules. Same gates, risk limits and execution as every setup.
+- **`strategy.raw_setups`** (paper/backtest only; live refuses to start): listed setups skip
+  KOLIBRI's edge filters (regime, 4h, score, cost, expected-R, blackouts, time stop) to measure
+  the rules as-is. Risk limits, data health and exchange-side stops still apply.
+
 ## Gates (first failing gate is journaled)
 
-`0_venue_no_short`, `0_dedup`, `1_regime`, `1_stop_distance`, `2_htf`, `2_leader`, `3_spread`,
+`0_venue_no_short`, `0_dedup`, `0_warmup` (webhook), `1_regime`, `1_target` (webhook), `1_stop_distance`, `2_htf`, `2_leader`, `3_spread`,
 `3_slippage`, `score`, `4_cost`, `4_net_r`, `5_data_gap`, `5_stale`, `5_clock`, `5_venue`, `6_blackout`,
 `7_cooldown`, `8_risk_*`. Each has a pass **and** a fail test (`tests/test_gates.py`).
 

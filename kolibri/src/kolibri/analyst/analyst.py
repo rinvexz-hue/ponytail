@@ -125,12 +125,28 @@ def setup_d(f: Features, d: Direction, cfg: Config) -> Trigger | None:
     return (f.low - buf if d is LONG else f.high + buf), None, True
 
 
+def setup_e(f: Features, d: Direction, cfg: Config) -> Trigger | None:
+    """GOD-MODE-style breakout (rules inferred from a protected TradingView script): price on the right
+    side of the long trend line, zero-lag EMA turning with it, close breaking the 20-bar high/low."""
+    if f.ema_trend is None or f.zlema is None or f.zlema_prev is None:
+        return None
+    s = d.sign
+    trend = s * (f.close - f.ema_trend) > 0 and s * (f.zlema - f.zlema_prev) > 0 and s * (f.close - f.zlema) > 0
+    breakout = f.close > f.swing_high if d is LONG else f.close < f.swing_low
+    if not (trend and breakout and s * (f.close - f.open) > 0):
+        return None
+    return f.close - s * float(cfg.strategy.gm_atr_mult) * f.atr, None, False
+
+
 SETUPS: dict[str, Callable[[Features, Direction, Config], Trigger | None]] = {
     "A_pullback": setup_a,
     "B_meanrev": setup_b,
     "C_breakout": setup_c,
     "D_sweep": setup_d,
+    "E_gm": setup_e,
 }
+RR_SETUPS = ("E_gm", "TV_signal")  # one target at gm_rr x risk, whole position (like the indicator)
+TRENDING = ("A_pullback", "C_breakout", "E_gm")
 
 
 def regime_allows(setup: str, d: Direction, regime: Regime, f: Features, cfg: Config) -> bool:
@@ -162,6 +178,11 @@ def build_candidate(f: Features, setup: str, d: Direction, trig: Trigger, spec: 
         entry, stop = ceil_to(entry, spec.tick), ceil_to(stop, spec.tick)
     risk = abs(entry - stop)
     tp1 = entry + s * risk
+    if setup in RR_SETUPS:
+        tp = entry + s * cfg.strategy.gm_rr * risk
+        tp = floor_to(tp, spec.tick) if d is LONG else ceil_to(tp, spec.tick)
+        return Candidate(symbol=f.symbol, setup=setup, direction=d, ts=f.ts, entry=entry, stop=stop, tp1=tp,
+                         tp2=None, atr=atr, htf_exempt=exempt, full_exit=True)
     # Final target comes from the 4h picture: the next 4h level, set a hair in front of it.
     # Mean reversion keeps its VWAP target unless the 4h level is closer. No level ahead (price beyond
     # the 4h range) = no fixed target: the runner trails.
@@ -186,7 +207,7 @@ def build_candidate(f: Features, setup: str, d: Direction, trig: Trigger, spec: 
 
 def score(f: Features, c: Candidate, cfg: Config) -> tuple[float, dict[str, float]]:
     s = c.direction.sign
-    trending = c.setup in ("A_pullback", "C_breakout")
+    trending = c.setup in TRENDING
     comp = {
         "trend": (
             sum((s * (f.ema9 - f.ema21) > 0, s * (f.ema21 - f.ema50) > 0, s * f.bias_15m > 0, s * f.stack_4h > 0,
@@ -250,6 +271,10 @@ class Analyst:
         self.last_emit: dict[tuple[str, str, Direction], int] = {}
         self.regimes: dict[str, Regime] = {}
         self.gate_status: dict[str, str] = {}  # symbol -> what blocks trading right now
+        st = cfg.strategy
+        unknown = [n for n in (*st.enabled_setups, *st.raw_setups) if n not in SETUPS and n != "TV_signal"]
+        if unknown:
+            raise ValueError(f"unknown setup(s) in config: {unknown}")
 
     def evaluate(self, f: Features | None, symbol: str, equity: Decimal, health: Health,
                  book: Book | None) -> list[Intent | Rejection]:
@@ -262,7 +287,8 @@ class Analyst:
         self.gate_status[symbol] = "no_setup" if regime not in (Regime.CHAOS,) else "regime:CHAOS"
         out: list[Intent | Rejection] = []
         spec = cfg.symbol_specs[symbol]
-        for name, fn in SETUPS.items():
+        for name in cfg.strategy.enabled_setups:
+            fn = SETUPS[name]
             for d in (LONG, SHORT):
                 trig = fn(f, d, cfg)
                 if trig is None:
@@ -273,6 +299,30 @@ class Analyst:
                 self.gate_status[symbol] = "open:" + name if isinstance(res, Intent) else res.gate
         return out
 
+    def external(self, f: Features | None, symbol: str, d: Direction, price: Decimal, ts: int, equity: Decimal,
+                 health: Health, book: Book | None, stop: Decimal | None = None,
+                 target: Decimal | None = None) -> Intent | Rejection:
+        """A signal from outside (TradingView alert). Missing stop/target follow the E_gm rules
+        (gm_atr_mult x ATR, gm_rr x risk); every gate applies unless "TV_signal" is a raw setup."""
+        def rej(gate: str, detail: str) -> Rejection:
+            return Rejection(symbol, "TV_signal", d, ts, gate, detail, 0.0)
+
+        if f is None:
+            return rej("0_warmup", "no features yet for this symbol")
+        spec, st, s = self.cfg.symbol_specs[symbol], self.cfg.strategy, d.sign
+        rnd = floor_to if d is LONG else ceil_to
+        entry, atr = rnd(price, spec.tick), Decimal(repr(f.atr))
+        stop = rnd(stop if stop is not None else entry - s * st.gm_atr_mult * atr, spec.tick)
+        if (entry - stop) * s <= 0:
+            return rej("1_stop_distance", f"stop {stop} on the wrong side of {entry}")
+        tp = rnd(target if target is not None else entry + s * st.gm_rr * abs(entry - stop), spec.tick)
+        if (tp - entry) * s <= 0:
+            return rej("1_target", f"target {tp} on the wrong side of {entry}")
+        c = Candidate(symbol=symbol, setup="TV_signal", direction=d, ts=ts, entry=entry, stop=stop, tp1=tp,
+                      tp2=None, atr=atr, htf_exempt=True, full_exit=True)
+        regime = self.regimes.get(symbol) or classify(f, self.cfg)
+        return self._gates(f, c, regime, equity, health, book, spec)
+
     def _gates(self, f: Features, c: Candidate, regime: Regime, equity: Decimal, health: Health,
                book: Book | None, spec: SymbolCfg) -> Intent | Rejection:
         cfg, g, s = self.cfg, self.cfg.gates, c.direction.sign
@@ -281,6 +331,7 @@ class Analyst:
         def rej(gate: str, detail: str) -> Rejection:
             return Rejection(c.symbol, c.setup, c.direction, c.ts, gate, detail, sc)
 
+        raw = c.setup in cfg.strategy.raw_setups  # its own rules: no edge filters (paper/backtest only)
         if c.direction is SHORT and not cfg.venue_cfg.supports_short:
             return rej("0_venue_no_short", "venue does not support shorts")
         key = (c.symbol, c.setup, c.direction)
@@ -288,22 +339,22 @@ class Analyst:
         if c.ts - self.last_emit.get(key, -(10**15)) < g.signal_dedup_bars * bar_ms:
             return rej("0_dedup", "same signal fired recently")
         # 1. regime
-        if not regime_allows(c.setup, c.direction, regime, f, cfg):
+        if not raw and not regime_allows(c.setup, c.direction, regime, f, cfg):
             return rej("1_regime", regime.value)
         risk = abs(c.entry - c.stop)
         if risk <= 0 or risk > cfg.strategy.stop_atr_max * c.atr:
             return rej("1_stop_distance", f"stop {risk / c.atr:.2f} ATR")
         # 2. top-down: the 4h picture must not oppose the trade, and must leave room to the next level
-        if not c.htf_exempt:
-            trending = c.setup in ("A_pullback", "C_breakout")
+        if not raw and not c.htf_exempt:
+            trending = c.setup in TRENDING
             if s * f.bias_4h < 0 or s * f.stack_4h < 0 or (trending and s * (f.close - f.ema50_4h) < 0):
                 return rej("2_htf", f"4h bias={f.bias_4h} stack={f.stack_4h} vs ema50_4h={f.ema50_4h:.6g}")
             if s * f.bias_15m < 0:
                 return rej("2_htf", f"15m bias={f.bias_15m}")
         level = Decimal(repr(f.hi_4h if c.direction is LONG else f.lo_4h))
-        if (level - c.entry) * s > 0 and (level - c.entry) * s < g.min_room_r * risk:
+        if not raw and (level - c.entry) * s > 0 and (level - c.entry) * s < g.min_room_r * risk:
             return rej("2_4h_room", f"4h level {level} only {(level - c.entry) * s / risk:.2f}R away")
-        if c.symbol != cfg.leader and s * f.leader_mom5_atr < -g.btc_block_atr:
+        if not raw and c.symbol != cfg.leader and s * f.leader_mom5_atr < -g.btc_block_atr:
             return rej("2_leader", f"leader mom5={f.leader_mom5_atr:.2f} ATR")
         # 3. spread + slippage for our size
         spread = Decimal(repr(f.spread_bps)) if f.spread_bps is not None else spec.spread_bps
@@ -315,7 +366,7 @@ class Analyst:
             return rej("3_slippage", f"{slip:.2f} bps")
         # soft score before the cost gate: expected-R is derived from it, so checking it later would
         # make this gate unreachable (every low score would already fail 4_net_r)
-        if sc < g.score_threshold:
+        if not raw and sc < g.score_threshold:
             return rej("score", f"{sc:.1f} < {g.score_threshold}")
         # 4. cost gate: maker entry + taker exit + exit slippage, both legs
         v = cfg.venue_cfg
@@ -325,14 +376,14 @@ class Analyst:
         rest_r = (abs(c.tp2 - c.entry) / risk) if c.tp2 is not None else cfg.strategy.runner_expected_r
         reward = tp1_r if c.full_exit else frac * tp1_r + (1 - frac) * rest_r  # expected gross R if it works
         gross = reward * risk  # the gross target distance, weighted over the TP1 part and the 4h target part
-        if gross < g.cost_multiple * cost:
+        if not raw and gross < g.cost_multiple * cost:
             return rej("4_cost", f"target {gross:.6g} < {g.cost_multiple}x cost {cost:.6g}")
         cost_r = cost / risk
         prior = g.win_prob_by_setup.get(c.setup, g.win_prob_prior)
         p = min(Decimal("0.9"), max(Decimal("0.05"),
                 prior + g.win_prob_per_score_pt * Decimal(repr(sc - g.score_threshold))))
         exp_r = p * reward - (1 - p) - cost_r
-        if exp_r < g.min_net_r:
+        if not raw and exp_r < g.min_net_r:
             return rej("4_net_r", f"E[R]={exp_r:.3f}")
         # 5. data health
         if f.gap or not health.connected:
@@ -344,7 +395,7 @@ class Analyst:
         if not health.venue_ok:  # market exits and new stops would be refused there
             return rej("5_venue", "Kraken not fully online")
         # 6. blackouts / session
-        why = in_blackout(c.ts, cfg)
+        why = None if raw else in_blackout(c.ts, cfg)
         if why:
             return rej("6_blackout", why)
         self.last_emit[key] = c.ts

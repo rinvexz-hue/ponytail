@@ -15,6 +15,7 @@ from kolibri.analyst.indicators import (
     EMA,
     MACD,
     RSI,
+    ZLEMA,
     Bollinger,
     Rolling,
     RollingPercentile,
@@ -100,6 +101,10 @@ class Features:
     beta_leader: float = 0.0
     leadlag: float = 0.0
     leader_mom5_atr: float = 0.0
+    # GOD-MODE-style setup (E_gm): long trend line + zero-lag trend; None until warm (200 bars)
+    ema_trend: float | None = None
+    zlema: float | None = None
+    zlema_prev: float | None = None
 
 
 class Aggregator:
@@ -191,8 +196,10 @@ def _sign(x: float, eps: float) -> int:
 
 
 class FeatureEngine:
-    def __init__(self, symbol: str, squeeze_pct: float = 0.15, context_minutes: int = 240) -> None:
+    def __init__(self, symbol: str, squeeze_pct: float = 0.15, context_minutes: int = 240,
+                 trend_len: int = 200, zlema_len: int = 21) -> None:
         self.symbol = symbol
+        self.ema_trend, self.zlema = EMA(trend_len), ZLEMA(zlema_len)
         self.squeeze_pct = squeeze_pct
         self.ema9, self.ema21, self.ema50 = EMA(9), EMA(21), EMA(50)
         self.rsi7, self.rsi14, self.stoch = RSI(7), RSI(14), StochRSI()
@@ -263,6 +270,8 @@ class FeatureEngine:
         # trend / momentum / volatility
         prev50 = self.ema50.value
         e9, e21, e50 = self.ema9.update(c), self.ema21.update(c), self.ema50.update(c)
+        zl_prev = self.zlema.value
+        ema_trend, zl = self.ema_trend.update(c), self.zlema.update(c)
         if prev50 is not None and e50 is not None:
             self.bias = _sign(e50 - prev50, c * 1e-5)
         self.macd.update(c)
@@ -354,6 +363,7 @@ class FeatureEngine:
             imbalance10=self._imb10.value if book else None,
             spread_bps=float(book.spread_bps) if book else None,
             depth_usd=float(min(book.depth10_bid_usd, book.depth10_ask_usd)) if book else None,
+            ema_trend=ema_trend, zlema=zl, zlema_prev=zl_prev,
         )
         self.last = f
         return f

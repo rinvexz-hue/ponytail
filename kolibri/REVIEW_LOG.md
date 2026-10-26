@@ -113,3 +113,15 @@ full suite green. Risk + execution coverage is enforced ≥ 85 % in CI.
 | 59 | Ops | Ubuntu's automatic security updates restart Docker, and a restart with an open position flattens and halts (by design) | fase 0: exclude docker/containerd/runc from unattended upgrades; update by hand when flat | docs |
 | 60 | Orders | a refused market exit (flatten, kill, time stop) left the position **without a stop** (it was pulled first) and was only retried if a new trigger fired, so after a kill never | refused exit puts the stop back at once and retries the exit every 30 s until it fills | `test_refused_exit_puts_the_stop_back_and_retries` (fails on the old code) |
 
+## Setup E (GOD-MODE rebuild) + TradingView webhook
+
+| # | Area | Decision | Covered by |
+|---|---|---|---|
+| 61 | Signals | the TradingView script is protected: `E_gm` rebuilds its idea (EMA200 side, zero-lag EMA turning, 20-bar breakout, 1.2 ATR stop, one 1.5R target) from description + chart labels; the 1.5R target was verified from a chart label (risk 66.87, reward 100.31) | `test_setup_e_fires_only_on_a_trend_aligned_breakout`, `test_gm_trade_has_one_target_at_rr_times_risk`, `test_zlema_is_an_ema_of_the_lag_corrected_price` |
+| 62 | Safety | "trade the indicator's rules as-is" must not reach live unproven: `raw_setups` skips edge filters in paper/backtest only; live refuses to start while it is set | `test_live_refuses_raw_setups`, `test_raw_mode_trades_the_rules_kolibri_filters_them`, `test_raw_setups_hold_to_target_or_stop_no_time_stop` |
+| 63 | Security | the webhook is the only internet-facing part: container-internal app, Caddy TLS + TradingView IP allowlist + POST /tv only + 4 KB body cap, constant-time secret, body never logged, 202 within TradingView's 3 s | `test_webhook_rejects_bad_secret_bad_symbol_and_missing_config` |
+| 64 | Signals | a TradingView alert goes through the same gates, risk review and execution as built-in setups; sells are refused on spot | `test_signal_goes_through_gates_risk_and_execution`, `test_signal_with_its_own_stop_and_target` |
+
+Synthetic 30-day backtest, `E_gm` raw (random-walk data, no edge by construction): 75 trades,
+−1.31R per trade, fees 3.4× gross. That is the cost floor any real edge must beat.
+

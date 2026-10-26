@@ -59,6 +59,14 @@ graduation pipeline exists precisely because they may not survive costs.
 - Starter-tier REST budget is small (15 points, −0.33/s). KOLIBRI uses ~2 calls per 30 s plus a
   short burst at start-up; do not run other tools on the same key (also: nonce errors).
 
+## Setup E / TradingView
+- `E_gm` is a rebuild of a protected TradingView script from its description and chart labels:
+  it is not that indicator, and its results say nothing about the original.
+- TradingView alerts carry no fill guarantee: KOLIBRI enters post-only at the touch when the alert
+  arrives (seconds late), not at the indicator's printed entry price. Sells are ignored on spot.
+- The webhook is the only internet-facing part. It relies on Caddy's IP allowlist + TLS + the
+  shared secret; if TradingView changes its IPs, alerts are refused (404) until the Caddyfile is updated.
+
 ## Operations
 - One process, one lock: a slow REST call delays tick handling. Fine at this scale.
 - SQLite writes happen on the event loop (tiny, WAL). Journal grows forever; rotate yearly.

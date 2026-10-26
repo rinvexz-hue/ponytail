@@ -25,6 +25,25 @@ class EMA:
         return self.value
 
 
+class ZLEMA:
+    """Zero-lag EMA: EMA of (2*x - x[lag]), lag = (n-1)//2. Cancels most of the EMA's delay."""
+
+    def __init__(self, n: int) -> None:
+        self.lag = (n - 1) // 2
+        self.ema = EMA(n)
+        self.hist: deque[float] = deque(maxlen=self.lag + 1)
+
+    def update(self, x: float) -> float | None:
+        self.hist.append(x)
+        if len(self.hist) <= self.lag:
+            return None
+        return self.ema.update(2 * x - self.hist[0])
+
+    @property
+    def value(self) -> float | None:
+        return self.ema.value
+
+
 class Wilder:
     """Wilder smoothing (RMA) seeded with the SMA of the first n values."""
 

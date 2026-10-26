@@ -353,7 +353,8 @@ class Executioner:
             if sym not in self.positions or sym in self.exiting:
                 return
         st_cfg = self.cfg.strategy
-        if (not pos.tp1_done and now - pos.opened_ts >= st_cfg.time_stop_s * 1000
+        if (not pos.tp1_done and pos.setup not in st_cfg.raw_setups  # raw setups hold to their TP/SL
+                and now - pos.opened_ts >= st_cfg.time_stop_s * 1000
                 and pos.r_multiple(pos.extreme) < st_cfg.time_stop_min_r):
             await self.flatten(sym, "time_stop", now)
 

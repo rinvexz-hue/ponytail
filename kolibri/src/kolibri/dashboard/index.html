@@ -311,12 +311,15 @@ const trend4h = (c) => {
   return ["Geen duidelijke trend", "neutral", "4 uur blokkeert niets, maar geeft ook geen extra punten"];
 };
 const SETUP = { A_pullback: "Trend-terugval", B_meanrev: "Terug naar gemiddelde", C_breakout: "Uitbraak",
-  D_sweep: "Stop-jacht omkering", orphan: "Onbekende positie" };
+  D_sweep: "Stop-jacht omkering", E_gm: "God-mode-uitbraak", TV_signal: "TradingView-alert",
+  orphan: "Onbekende positie" };
 const GATE = {
   no_setup: ["Geen signaal", "wacht op een patroon", "neutral"], warmup: ["Opwarmen", "nog te weinig data", "neutral"],
   "regime:CHAOS": ["Markt te onrustig", "geen nieuwe trades", "crit"],
   "0_venue_no_short": ["Short niet toegestaan", "beurs staat alleen kopen toe", "neutral"],
   "0_dedup": ["Signaal net al gegeven", "voorkomt dubbele trades", "neutral"],
+  "0_warmup": ["Nog geen marktdata", "alert kwam voor de opwarmtijd klaar was", "neutral"],
+  "1_target": ["Doel aan verkeerde kant", "tp in de alert klopt niet met de richting", "attn"],
   "1_regime": ["Past niet bij marktfase", "strategie hoort bij andere fase", "attn"],
   "1_stop_distance": ["Stop-loss te ver weg", "risico per munt te groot", "attn"],
   "2_htf": ["4-uurs trend wijst andere kant op", "niet tegen de grote trend in", "attn"],

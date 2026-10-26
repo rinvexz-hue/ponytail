@@ -122,6 +122,12 @@ class StrategyCfg(_Frozen):
     rsi_extreme: float
     breakout_volz: float
     sweep_volz: float
+    enabled_setups: tuple[str, ...]
+    raw_setups: tuple[str, ...]  # paper/backtest only: skip KOLIBRI's edge filters, keep risk + health
+    gm_trend_len: int
+    gm_zlema_len: int
+    gm_atr_mult: Decimal
+    gm_rr: Decimal
 
     @model_validator(mode="after")
     def _stops(self) -> StrategyCfg:
